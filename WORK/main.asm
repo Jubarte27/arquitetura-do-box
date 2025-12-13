@@ -1,21 +1,56 @@
 ;====================================================================
 ; Macros
+;--------------------------------------------------------------------
+; Save and restore registers
+OPEN_DELIMITER    textequ <!<>
+CLOSE_DELIMITER   textequ <!>>
+REG_SET_DELIMITER textequ <|>
+
+regStack          textequ <>   ; starts empty
+
+__popRegs         macro
+	local regs_end, regs
+	regs_end instr 1, regStack, REG_SET_DELIMITER
+	if    regs_end eq 0
+		regs     substr regStack, 1
+		regStack textequ <>
+	else
+		regs substr regStack, 1, (regs_end - 1)
+		regStack substr regStack, (regs_end + 1)
+	endif
+	exitm regs
+endm
+
+__pushRegs macro regs
+	size_s SIZESTR regStack
+	if     size_s eq 0
+		regStack CATSTR regs
+	else
+		regStack CATSTR regs, REG_SET_DELIMITER, regStack
+	endif
+endm
+
 SaveRegs macro regs:VARARG
-	local reg
-	FOR   reg, <regs>
-		push reg
+	LOCAL reg, comma, regpushed
+	comma     TEXTEQU <>
+	regpushed TEXTEQU <>
+	FOR       reg, <regs>
+		push  reg
+		regpushed CATSTR <reg>, comma, regpushed
+		comma CATSTR <, >
 	ENDM
+	regpushed CATSTR OPEN_DELIMITER, regpushed, CLOSE_DELIMITER
+	__pushRegs regpushed
 ENDM
-; RestoreRegs - Macro to generate a pop instruction for registers
-; saved by the SaveRegs macro. Restores one group of registers.
-RestoreRegs macro regs:VARARG
-	local reg
-	FOR   reg, <regs>
+
+RestoreRegs MACRO
+	LOCAL reg
+%	FOR reg, __popRegs(regStack) ;; Pop each register
 		pop reg
 	ENDM
 ENDM
-
-
+;--------------------------------------------------------------------
+; Prints
 printf_c macro string:req
 	SaveRegs ax,   dx
 	FORC     char, <string>
@@ -23,7 +58,7 @@ printf_c macro string:req
 		mov dl, '&char' ;; Select ASCII char
 		int 21h         ;; Call DOS
 	ENDM
-	RestoreRegs dx, ax
+	RestoreRegs
 ENDM
 
 print_Pair macro line:req, col:req
@@ -37,7 +72,7 @@ print_Pair macro line:req, col:req
     call     printf_w
     printf_c <)>
 
-	RestoreRegs ax
+	RestoreRegs
 ENDM
 
 print_FilePosition macro
@@ -48,12 +83,27 @@ print_TotalRowCol macro
 	print_Pair TotalRow, TotalCol
 endm
 
+;--------------------------------------------------------------------
+; Miscellaneous
 HandleCR macro
 	call PeekChar
 	mov  bh, PeekBuffer
 	.IF  bh != LF
 		jmp ErrorUnexpectedChar
 	.ENDIF
+endm
+
+MoveBack macro
+	SaveRegs ax, bx, cx, dx
+    ; Move back by one byte
+    mov bx, FileHandle
+    mov ah, 42h
+    mov cx, 0FFFFh     ; Means dx is negative
+    mov dx, -1
+    mov al, 1
+    int 21h
+	jc  ErrorRead
+	RestoreRegs
 endm
 
 ;====================================================================
@@ -189,20 +239,20 @@ ReadEmptyLines proc near
 
 		call ReadChar
 	.ENDW
-    RestoreRegs bx, ax
+    RestoreRegs
 	ret
 ReadEmptyLines endp
 
 OpenFile       proc near
-	SaveRegs    ax,         dx
-    mov         al,         0
-	lea         dx,         FileName
-	mov         ah,         3dh
-	int         21h
-	jc          ErrorOpen
-    mov         FileHandle, ax
-	mov         FileIsOpen, 0        ; 0 means it is open
-	RestoreRegs dx,         ax
+	SaveRegs ax,         dx
+    mov      al,         0
+	lea      dx,         FileName
+	mov      ah,         3dh
+	int      21h
+	jc       ErrorOpen
+    mov      FileHandle, ax
+	mov      FileIsOpen, 0        ; 0 means it is open
+	RestoreRegs
     ret
 OpenFile endp
 
@@ -211,8 +261,8 @@ ReadChar proc near
 	lea      dx, FileBuffer
     call     ReadCharToDX
     
-    inc         FileCol
-    RestoreRegs dx
+    inc FileCol
+    RestoreRegs
     ret
 ReadChar     endp
 
@@ -231,27 +281,18 @@ ReadCharToDX proc near
         mov byte ptr[bx], 0
     .ENDIF
 
-    RestoreRegs cx, bx
+    RestoreRegs
     ret
 ReadCharToDX endp
 
 PeekChar     proc near
-    SaveRegs ax, bx, cx, dx
+    SaveRegs dx
 
 	lea  dx, PeekBuffer
 	call ReadCharToDX
+	MoveBack
 
-    ; move back by one byte
-    mov bx, FileHandle
-    mov ah, 42h
-    mov cx, 0FFFFh     ; Means dx is negative
-    mov dx, -1
-    mov al, 1
-    int 21h
-	jc  ErrorRead
-
-EndPeek:
-	RestoreRegs dx, cx, bx, ax
+	RestoreRegs
     ret
 PeekChar endp
 
@@ -276,7 +317,7 @@ printf_s proc	near
 		inc bx
 	.ENDW
 
-	RestoreRegs dx, bx, ax
+	RestoreRegs
 	ret
 printf_s endp
 
@@ -292,7 +333,7 @@ printf_w proc	near
 	call sprintf_w
 	call printf_s
 	
-	RestoreRegs bx
+	RestoreRegs
 	ret
 printf_w  endp
 
@@ -302,49 +343,50 @@ printf_w  endp
 ; sprintf(string->bx, "%d", n->ax)
 ;--------------------------------------------------------------------
 sprintf_w proc	near
+	local n:word, f:word, m:word
 	SaveRegs ax,bx,cx,dx
-	mov sw_n, ax
-	mov cx,   5
-	mov sw_m, 10000
-	mov sw_f, 0
+	mov n,  ax
+	mov cx, 5
+	mov m,  10000
+	mov f,  0
 	
 sw_do:
 	mov dx, 0
-	mov ax, sw_n
-	div sw_m
+	mov ax, n
+	div m
 	
-	cmp al,   0
+	cmp al, 0
 	jne sw_store
-	cmp sw_f, 0
+	cmp f,  0
 	je  sw_continue
 sw_store:
 	add al,   '0'
 	mov [bx], al
 	inc bx
 	
-	mov sw_f, 1
+	mov f, 1
 sw_continue:
 	
-	mov sw_n, dx
+	mov n, dx
 	
-	mov dx,   0
-	mov ax,   sw_m
-	mov bp,   10
+	mov dx, 0
+	mov ax, m
+	mov bp, 10
 	div bp
-	mov sw_m, ax
+	mov m,  ax
 	
 	dec cx
 	cmp cx, 0
 	jnz sw_do
 
-	cmp sw_f, 0
+	cmp f,    0
 	jnz sw_continua2
 	mov [bx], '0'
 	inc bx
 sw_continua2:
 
 	mov byte ptr[bx], 0
-	RestoreRegs dx,cx,bx,ax
+	RestoreRegs
 	ret
 sprintf_w endp
 
@@ -376,10 +418,6 @@ PeekBuffer        db  ?
 TheUnexpectedChar db  0,QUOT,0
 ; Variável interna usada na rotina printf_w
 BufferWRWORD      db  10 dup (?)
-; Variaveis para uso interno na função sprintf_w
-sw_n              dw  0
-sw_f              db  0
-sw_m              dw  0
 ; used in main
 FileCol           dw  1
 FileLine          dw  1
