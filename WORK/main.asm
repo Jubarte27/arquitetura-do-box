@@ -85,7 +85,7 @@ MainLoop:
         mov FileCol, 1
 		;====================================================================
 		; On a new line, the number of columns should always be the same
-		mov ax, Col
+		mov ax,      Col
 		.IF Row == 0
 			mov TotalCol, ax
 		.ELSEIF TotalCol != ax
@@ -162,7 +162,7 @@ ErrorUnexpectedChar:
 
     print_FilePosition
 
-    printf_c < Erro: caracter inexperado: >
+    printf_c < Erro: caracter inexperado: ">
     lea      bx, TheUnexpectedChar
 	call     printf_s
 
@@ -244,11 +244,11 @@ PeekChar     proc near
     ; move back by one byte
     mov bx, FileHandle
     mov ah, 42h
-    mov cx, 0FFFFh ; Means dx is negative
+    mov cx, 0FFFFh     ; Means dx is negative
     mov dx, -1
     mov al, 1
     int 21h
-	jc ErrorRead
+	jc  ErrorRead
 
 EndPeek:
 	RestoreRegs dx, cx, bx, ax
@@ -267,22 +267,16 @@ PeekChar endp
 ;printf_s(char *s -> bx)
 ;--------------------------------------------------------------------
 printf_s proc	near
-	; SaveRegs ax, bx, dx
-	
-	mov dl, [bx]
-	cmp dl, 0
-	je  ps_1
+	SaveRegs ax, bx, dx
 
-	push bx
-	mov  ah, 2
-	int  21H
-	pop  bx
+	.WHILE byte ptr [bx] != 0
+		mov ah, 2
+		mov dl, [bx]
+		int 21H
+		inc bx
+	.ENDW
 
-	inc bx
-	jmp printf_s
-
-ps_1:
-	; RestoreRegs dx, bx, ax
+	RestoreRegs dx, bx, ax
 	ret
 printf_s endp
 
@@ -292,16 +286,13 @@ printf_s endp
 ;printf("%
 ;--------------------------------------------------------------------
 printf_w proc	near
-	; SaveRegs bx
-	; sprintf_w(ax, BufferWRWORD)
+	SaveRegs bx
+
 	lea  bx, BufferWRWORD
 	call sprintf_w
-	
-	; printf_s(BufferWRWORD)
-	lea  bx, BufferWRWORD
 	call printf_s
 	
-	; RestoreRegs bx
+	RestoreRegs bx
 	ret
 printf_w  endp
 
@@ -311,7 +302,7 @@ printf_w  endp
 ; sprintf(string->bx, "%d", n->ax)
 ;--------------------------------------------------------------------
 sprintf_w proc	near
-	; SaveRegs ax,bx,cx,dx
+	SaveRegs ax,bx,cx,dx
 	mov sw_n, ax
 	mov cx,   5
 	mov sw_m, 10000
@@ -353,7 +344,7 @@ sw_continue:
 sw_continua2:
 
 	mov byte ptr[bx], 0
-	; RestoreRegs dx,cx,bx,ax
+	RestoreRegs dx,cx,bx,ax
 	ret
 sprintf_w endp
 
@@ -398,6 +389,9 @@ Col               dw  0
 TotalRow          dw  0
 TotalCol          dw  0
 
+numberBeingRead   dw  ?
+
+N                 dw  0
 Matrix            dw  0
 
 ;--------------------------------------------------------------------
