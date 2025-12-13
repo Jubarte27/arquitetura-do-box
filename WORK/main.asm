@@ -1,3 +1,45 @@
+.model small, stdcall
+
+;===========================================================
+;===========================================================
+	.stack
+CR            equ 0dh
+LF            equ 0ah
+QUOT          equ 22h
+SEMI          equ 3Bh
+COL_SEPARATOR equ SEMI
+
+	.data
+
+BuffSize          equ 100              ; tam. máximo dos dados lidos no buffer
+FileName          db  "MAT.TXT",0      ; Nome do arquivo a ser lido
+FileBuffer        db  BuffSize dup (?) ; Buffer de leitura do arquivo
+FileHandle        dw  0                ; Handler do arquivo
+FileIsOpen        db  1                ; closed at the start
+FileNameBuffer    db  150 dup (?)
+caractere         db  0
+
+MsgCRLF           db  CR, LF, 0
+
+; Used on PeekChar
+PeekBuffer        db  ?
+; Used when reporting the error
+TheUnexpectedChar db  0,QUOT,0
+; Variaveis para uso interno na função sprintf_w
+; used in main
+FileCol           dw  1
+FileLine          dw  1
+
+Row               dw  0
+Col               dw  0
+TotalRow          dw  0
+TotalCol          dw  0
+
+numberBeingRead   dw  ?
+
+N                 dw  0
+Matrix            dw  0
+
 ;====================================================================
 ; Macros
 ;--------------------------------------------------------------------
@@ -21,7 +63,7 @@ __popRegs         macro
 	exitm regs
 endm
 
-__pushRegs macro regs
+__pushRegs macro regs:req
 	size_s SIZESTR regStack
 	if     size_s eq 0
 		regStack CATSTR regs
@@ -51,6 +93,14 @@ RestoreRegs MACRO
 ENDM
 ;--------------------------------------------------------------------
 ; Prints
+putc macro c:req
+	SaveRegs ax, dx
+	mov      ah, 02h ;; Select DOS Print Char function
+	mov      dl, c   ;; Select ASCII char
+	int      21h     ;; Call DOS
+	RestoreRegs
+endm
+
 printf_c macro string:req
 	SaveRegs ax,   dx
 	FORC     char, <string>
@@ -62,17 +112,11 @@ printf_c macro string:req
 ENDM
 
 print_Pair macro line:req, col:req
-	SaveRegs ax
-
     printf_c <(>
-    mov      ax, line
-    call     printf_w
+    invoke   printf_w, line
     printf_c <:>
-    mov      ax, col
-    call     printf_w
+    invoke   printf_w, col
     printf_c <)>
-
-	RestoreRegs
 ENDM
 
 print_FilePosition macro
@@ -108,9 +152,14 @@ endm
 
 ;====================================================================
 ; Program
-
-	.model small
 	.code
+;--------------------------------------------------------------------
+; Prototypes
+;--------------------------------------------------------------------
+printf_s proto near, string:ptr byte
+printf_w proto near, number:word
+sprintf_w proto near, string:ptr byte, number:word
+
 	.startup
 Main:
 	call OpenFile
@@ -207,22 +256,26 @@ ErrorRowCount:
 	print_TotalRowCol
 	jmp      ExitFailure
 
-ErrorUnexpectedChar:
-    mov TheUnexpectedChar, bl
+ErrorUnexpectedChar proc near
+	SaveRegs bx
+	mov      bl, [FileBuffer]
+    mov      [TheUnexpectedChar], bl
 
     print_FilePosition
 
     printf_c < Erro: caracter inexperado: ">
-    lea      bx, TheUnexpectedChar
-	call     printf_s
+	invoke   printf_s, addr TheUnexpectedChar
 
 	jmp ExitFailure
+
+	ret
+ErrorUnexpectedChar endp
 
 
 ;====================================================================
 ; Functions
 
-ReadEmptyLines proc near
+ReadEmptyLines      proc near
 	SaveRegs ax, bx
     call     ReadChar
 	.WHILE   ax != 0
@@ -234,7 +287,7 @@ ReadEmptyLines proc near
 		.ELSEIF bl == CR
 			HandleCR
 		.ELSE
-			jmp ErrorUnexpectedChar
+			call ErrorUnexpectedChar
 		.ENDIF
 
 		call ReadChar
@@ -251,7 +304,7 @@ OpenFile       proc near
 	int      21h
 	jc       ErrorOpen
     mov      FileHandle, ax
-	mov      FileIsOpen, 0        ; 0 means it is open
+	mov      FileIsOpen, 0        ; 0 means it is open, anything else it is closed
 	RestoreRegs
     ret
 OpenFile endp
@@ -297,140 +350,65 @@ PeekChar     proc near
 PeekChar endp
 
 ;====================================================================
-; A partir daqui, estão as funções já desenvolvidas
-;	1) printf_s
-;	2) printf_w
-;	3) sprintf_w
-;====================================================================
-	
-;--------------------------------------------------------------------
-;Função Escrever um string na tela
-;printf_s(char *s -> bx)
-;--------------------------------------------------------------------
-printf_s proc	near
-	SaveRegs ax, bx, dx
-
+printf_s proc near uses ax bx bp dx, string:ptr byte
+	mov    bx, string
 	.WHILE byte ptr [bx] != 0
 		mov ah, 2
 		mov dl, [bx]
 		int 21H
 		inc bx
 	.ENDW
-
-	RestoreRegs
 	ret
 printf_s endp
 
-;
-;--------------------------------------------------------------------
-;Função: Escreve o valor de ax na tela
-;printf("%
-;--------------------------------------------------------------------
-printf_w proc	near
-	SaveRegs bx
+printf_w PROC near, number:word
+    local  buf[6]:byte
+    invoke sprintf_w, addr buf, number
+    invoke printf_s, addr buf
+    ret
+printf_w ENDP
 
-	lea  bx, BufferWRWORD
-	call sprintf_w
-	call printf_s
-	
-	RestoreRegs
-	ret
-printf_w  endp
+sprintf_w proc near uses ax bx cx dx si bp, string:ptr byte, number:word
+    local value:word, divisor:word, first:byte
 
-;
-;--------------------------------------------------------------------
-;Função: Converte um inteiro (n) para (string)
-; sprintf(string->bx, "%d", n->ax)
-;--------------------------------------------------------------------
-sprintf_w proc	near
-	local n:word, f:word, m:word
-	SaveRegs ax,bx,cx,dx
-	mov n,  ax
-	mov cx, 5
-	mov m,  10000
-	mov f,  0
-	
-sw_do:
-	mov dx, 0
-	mov ax, n
-	div m
-	
-	cmp al, 0
-	jne sw_store
-	cmp f,  0
-	je  sw_continue
-sw_store:
-	add al,   '0'
-	mov [bx], al
-	inc bx
-	
-	mov f, 1
-sw_continue:
-	
-	mov n, dx
-	
-	mov dx, 0
-	mov ax, m
-	mov bp, 10
-	div bp
-	mov m,  ax
-	
-	dec cx
-	cmp cx, 0
-	jnz sw_do
+    mov divisor, 10000
+    mov first,   1     ; 0 is true
 
-	cmp f,    0
-	jnz sw_continua2
-	mov [bx], '0'
-	inc bx
-sw_continua2:
+    mov ax,    number
+    mov value, ax
 
-	mov byte ptr[bx], 0
-	RestoreRegs
-	ret
-sprintf_w endp
+    mov bx, string
+    mov cx, 5
+	.repeat
+		mov dx,    0
+		mov ax,    value
+		div divisor
+		mov value, dx
 
+		.if (ax != 0) || (first == 0)
+			add  al,            '0'
+			mov  byte ptr [bx], al
+			inc  bx
+			mov  first,         0
+		.endif
 
-;===========================================================
-;===========================================================
-	.stack
-CR            equ 0dh
-LF            equ 0ah
-QUOT          equ 22h
-SEMI          equ 3Bh
-COL_SEPARATOR equ SEMI
+		mov dx,      0
+		mov ax,      divisor
+		mov si,      10
+		div si
+		mov divisor, ax
 
-	.data
+	.untilcxz
 
-BuffSize          equ 100              ; tam. máximo dos dados lidos no buffer
-FileName          db  "MAT.TXT",0      ; Nome do arquivo a ser lido
-FileBuffer        db  BuffSize dup (?) ; Buffer de leitura do arquivo
-FileHandle        dw  0                ; Handler do arquivo
-FileIsOpen        db  1                ; closed at the start
-FileNameBuffer    db  150 dup (?)
-caractere         db  0
+    .IF (first == 1)
+        mov byte ptr [bx], '0'
+        inc bx
+    .ENDIF
 
-MsgCRLF           db  CR, LF, 0
+    mov byte ptr [bx], 0
+    ret
 
-; Used on PeekChar
-PeekBuffer        db  ?
-; Used when reporting the error
-TheUnexpectedChar db  0,QUOT,0
-; Variável interna usada na rotina printf_w
-BufferWRWORD      db  10 dup (?)
-; used in main
-FileCol           dw  1
-FileLine          dw  1
-
-Row               dw  0
-Col               dw  0
-TotalRow          dw  0
-TotalCol          dw  0
-
-numberBeingRead   dw  ?
-
-N                 dw  0
-Matrix            dw  0
+sprintf_w ENDP
 
 ;--------------------------------------------------------------------
 end

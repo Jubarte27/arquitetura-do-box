@@ -1,3 +1,4 @@
 rescan
-MASM main.asm
-LINK main.obj;
+cls
+MASM /T main.asm
+LINK /NOLOGO main.obj;
