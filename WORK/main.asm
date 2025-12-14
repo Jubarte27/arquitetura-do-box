@@ -18,6 +18,10 @@
 	ReadEmptyLines proto near
 	ReadMatrix     proto near
 
+
+	ParseCommand proto near
+	ReadCommand  proto near
+
 	PrintMatrix proto near
 
 ;====================================================================
@@ -39,6 +43,10 @@
 	FileIsOpen     db  0                ; closed at the start
 	FileNameBuffer db  150 dup (?)
 	caractere      db  0
+
+	CommandBuffer       db 254
+	CommandBufferLength db 0          ; max length, actual length
+	CommandBufferString db 254 dup(0)
 
 	MsgCRLF           db CR, LF, 0
 	; Used on PeekChar
@@ -114,6 +122,7 @@
 	RegsInvokeUses textequ <ax bx cx dx bp>
 
 	RegsReturningOnAX textequ <bx cx dx bp>
+	RegsReturningOnBX textequ <ax cx dx bp>
 ;--------------------------------------------------------------------
 ; Prints
 	putc macro c:req
@@ -189,7 +198,10 @@
 	.startup
 	invoke ReadMatrix
 	invoke PrintMatrix
-	jmp    ExitSuccess
+	@whiletrue:
+		invoke ReadCommand
+	jmp @whiletrue
+	jmp ExitSuccess
 ;====================================================================
 ; Exiting
 	ExitSuccess:
@@ -205,6 +217,178 @@
 			CloseFileHandle
 		.endif
 		.exit
+
+;====================================================================
+; Reading input
+
+	ReadCommand proc near uses RegsInvokeUses si
+		mov dx, offset CommandBuffer
+		mov ah, 0Ah
+		int 21h
+
+		mov si, offset CommandBufferString
+		mov bh, 0
+		mov bl, CommandBufferLength
+		
+		mov byte ptr [CommandBufferString+bx], 0
+
+		invoke ParseCommand
+
+		jc ErrorInvalidCommand
+
+		printf_c <aceitamos a batata>
+		putc LF
+
+		ret
+	ReadCommand endp
+
+	; constStr must be uppercase, doesn't work with symbols
+	StartsWith macro constStr, memString
+		LOCAL i, @@eq, @@ne, @@done
+		SaveRegs ax, bx
+
+		i = 0
+		
+		mov bx, memString
+		
+		forc char, <constStr>
+			mov al, [bx+i]
+			and al, 11011111b ; toUpperCase
+			cmp al, '&char'
+			jne @@ne
+
+			i = i + 1
+		endm 
+		mov ax, 1
+
+		jmp @@done
+		@@ne:
+			mov ax, 0
+
+		@@done:
+			cmp ax, 0
+			RestoreRegs
+	endm
+
+
+	CMD_NONE  EQU 0
+	CMD_MUL   EQU 1
+	CMD_ADD   EQU 2
+	CMD_UNDO  EQU 3
+	CMD_WRITE EQU 4
+	; OUT:
+	;   AX = command ID (CMD_*)
+	;   BX = param1 (if any)
+	;   CX = param2 (if any)
+	;   DX = offset of string (WRITE)
+	; CF = 1 on error
+
+	SkipSpacesInSI macro string:req
+		.while BYTE PTR [string] == ' '
+			inc si
+		.endw
+	endm
+
+	; Return the value read in result, and the end of the string read in si
+	ReadNumFromString proc near uses RegsInvokeUses, string:ptr byte, result:ptr sword
+		mov ax, 0
+		mov bx, 0
+		mov si, string
+		mov cx, 0
+		mov dx, 10
+
+		.if byte ptr [si] == '-'
+			inc si
+			mov cx, 1
+		.endif
+
+		.while (byte ptr [si] >= '0') && (byte ptr [si] <= '9')
+			mul cx
+
+			mov bl, [si]
+			sub bl, '0'
+			add ax, bx
+
+			inc si
+		.endw
+
+		.if (cx)
+			neg ax
+		.endif
+
+		mov bx,           result
+		mov word ptr[bx], ax
+		ret
+	ReadNumFromString endp
+
+	skipAndRead macro string:req, numberInMemory:req, resultReg:req
+		SkipSpacesInSI string
+
+		.if (byte ptr [string] > '9' || byte ptr [string] < '0' )
+			jmp ErrorCommandExpectsNumber
+		.endif
+		
+		invoke ReadNumFromString, string, addr numberInMemory
+		
+		mov resultReg, numberInMemory
+	endm
+
+	; string in memory mus be in si
+	jumpIfSIComparesTo macro constStr:req, jumpTarget:req
+		StartsWith <constStr> si
+		
+		.if (!zero?)
+			add si, @SizeStr(constStr)
+			jmp jumpTarget
+		.endif
+	endm
+
+	ParseCommand proc near uses si di bp
+		local a:sword
+
+		mov si, offset CommandBufferString
+		
+		SkipSpacesInSI si
+
+		jumpIfSIComparesTo <MUL> ParseCommand@MUL
+		jumpIfSIComparesTo <ADD> ParseCommand@ADD
+		jumpIfSIComparesTo <UNDO> ParseCommand@UNDO
+		jumpIfSIComparesTo <WRITE> ParseCommand@WRITE
+		
+	ParseCommand@error:
+		stc
+		ret
+	ParseCommand@MUL:
+
+		skipAndRead si, a, bx
+		skipAndRead si, a, cx
+		mov ax, CMD_MUL
+
+		jmp ParseCommand@success
+
+	ParseCommand@ADD:
+
+		skipAndRead si, a, bx
+		skipAndRead si, a, cx
+		mov ax, CMD_ADD
+		
+		jmp ParseCommand@success
+
+	ParseCommand@UNDO:
+		mov ax, CMD_UNDO
+		jmp ParseCommand@success
+
+	ParseCommand@WRITE:
+		SkipSpacesInSI si
+		
+		mov dx, si        ; filename pointer
+		mov ax, CMD_WRITE
+
+	ParseCommand@success:
+		clc
+		ret
+	ParseCommand endp
+
 
 ;====================================================================
 ; Reading error reporting
@@ -241,6 +425,16 @@
 		print_FilePosition
 		printf_c < Erro: N deve estar entre 2 e 7. N encontrado: >
 		invoke   printf_u, N
+		jmp      ExitFailure
+
+	ErrorInvalidCommand:
+		printf_c <Unable to parse command: >
+		invoke   printf_s, addr CommandBufferString
+		jmp      ExitFailure
+
+	ErrorCommandExpectsNumber:
+		printf_c <Command expects arguments: >
+		invoke   printf_s, addr CommandBufferString
 		jmp      ExitFailure
 
 
