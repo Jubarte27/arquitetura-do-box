@@ -1,5 +1,5 @@
 .model small, stdcall
-;===========================================================
+;===================================================================
 ; Prototypes
 	printf_s proto near, string:ptr byte
 	printf_u proto near, number:word
@@ -8,7 +8,13 @@
 	string_from_sword proto near, string:ptr byte, number:sword
 
 	ReadNum proto near, result:ptr word
-;===========================================================
+	ReadChar proto near
+	ReadCharTo proto near, Buffer:ptr byte
+	PeekChar proto near
+	ReadEmptyLines proto near
+
+	OpenFile proto near
+;====================================================================
 ; Memory
 		.stack
 
@@ -48,7 +54,7 @@
 
 ;====================================================================
 ; Macros
-; -----------------------------------------
+;--------------------------------------------------------------------
 ; Save and restore registers
 	OPEN_DELIMITER    textequ <!<>
 	CLOSE_DELIMITER   textequ <!>>
@@ -97,22 +103,26 @@
 			pop reg
 		ENDM
 	ENDM
+
+	RegsInvokeUses textequ <ax bx cx dx bp>
+
+	RegsReturningOnAX textequ <bx cx dx bp>
 ;--------------------------------------------------------------------
 ; Prints
 	putc macro c:req
 		SaveRegs ax, dx
-		mov      ah, 02h ;; Select DOS Print Char function
-		mov      dl, c   ;; Select ASCII char
-		int      21h     ;; Call DOS
+		mov      ah, 02h
+		mov      dl, c
+		int      21h
 		RestoreRegs
 	endm
 
 	printf_c macro string:req
 		SaveRegs ax,   dx
 		FORC     char, <string>
-			mov ah, 02h     ;; Select DOS Print Char function
-			mov dl, '&char' ;; Select ASCII char
-			int 21h         ;; Call DOS
+			mov ah, 02h
+			mov dl, '&char'
+			int 21h
 		ENDM
 		RestoreRegs
 	ENDM
@@ -136,7 +146,7 @@
 ;--------------------------------------------------------------------
 ; Miscellaneous
 	HandleCR macro
-		call PeekChar
+		invoke PeekChar
 		mov  bh, PeekBuffer
 		.IF  bh != LF
 			jmp ErrorUnexpectedChar
@@ -158,11 +168,11 @@
 
 	CurrentIndexToBx macro
 		SaveRegs ax
-		mov al, TotalRow
+		mov      al, TotalRow
 
 		mov bl, Row
 		mov bh, Col
-		sub bl, 1 ; starting at 0 makes it easier
+		sub bl, 1   ; starting at 0 makes it easier
 		sub bh, 1
 
 		mul bl
@@ -182,93 +192,65 @@
 ; Program
 	.code
 	.startup
-Main:
-	call OpenFile
-	
-MainLoop:
-    call ReadChar
-    .IF  ax == 0  ; EOF
-		mov al, TotalCol
-		dec al               ; ax = N
-		.IF (TotalRow != al)
-			jmp ErrorRowCount
-		.ELSEIF (al < 2 ) || (al > 7)
-			jmp ErrorInvalidN
+	Main:
+		invoke OpenFile
+		
+	MainLoop:
+		invoke ReadChar
+		.IF  ax == 0  ; EOF
+			mov al, TotalCol
+			dec al               ; ax = N
+			.IF (TotalRow != al)
+				jmp ErrorRowCount
+			.ELSEIF (al < 2 ) || (al > 7)
+				jmp ErrorInvalidN
+			.ENDIF
+			jmp ExitSuccess
 		.ENDIF
-        jmp ExitSuccess
-    .ENDIF
 
-	mov bl, FileBuffer
-
-    .IF bl == COL_SEPARATOR
-        inc Col
-    .ELSEIF bl == LF
-        inc FileLine
-        mov FileCol, 1
-		;====================================================================
-		; On a new line, the number of columns should always be the same
-		mov al,      Col
-		.IF Row == 0
-			mov TotalCol, al
-		.ELSEIF TotalCol != al
-			jmp ErrorColumnCount
-		.ENDIF
-		;====================================================================
-		; If next line is empty, all next lines should be empty
-		call PeekChar
-		mov  bh, PeekBuffer
-		.IF  bh == LF || bh == CR
-			call ReadEmptyLines
-		;====================================================================
-		; Otherwise, next line must have data
-		.ELSE
-			inc Row
-			inc TotalRow
-			mov Col, 0
-		.ENDIF
-    .ELSEIF bl == CR ; accept cr only before lf
-        HandleCR
-	.ELSEIF (bl == '-')
-		CurrentIndexToBx
-		invoke ReadNum, bx
-		neg sword ptr [bx]
-		invoke printf_d, [bx]
-		printf_c < >
-	.ELSEIF  (bl <= '9') && (bl >= '0')
-		MoveBack
-		CurrentIndexToBx
-		invoke ReadNum, bx
-		invoke printf_d, [bx]
-		printf_c < >
-	.ELSE
-        jmp ErrorUnexpectedChar
-    .ENDIF
-NextLoop:
-	jmp MainLoop
-
-ReadNum proc near uses ax bx cx dx bp, result:ptr word
-	call ReadChar
-	mov ax, 0
-	mov bx, 0
-	mov cx, 10
-	mov bl, FileBuffer
-	.while ((bl <= '9') && (bl >= '0'))
-		mul cx
-
-		sub bl, '0'
-		add ax, bx
-
-		push ax
-		call ReadChar
-		pop ax
 		mov bl, FileBuffer
-	.endw
-	MoveBack
 
-	mov bx, result
-	mov word ptr[bx], ax
-	ret
-ReadNum endp
+		.IF bl == COL_SEPARATOR
+			inc Col
+		.ELSEIF bl == LF
+			inc FileLine
+			mov FileCol, 1
+			;====================================================================
+			; On a new line, the number of columns should always be the same
+			mov al,      Col
+			.IF Row == 0
+				mov TotalCol, al
+			.ELSEIF TotalCol != al
+				jmp ErrorColumnCount
+			.ENDIF
+			;====================================================================
+			; If next line is empty, all next lines should be empty
+			invoke PeekChar
+			mov  bh, PeekBuffer
+			.IF  bh == LF || bh == CR
+				invoke ReadEmptyLines
+			;====================================================================
+			; Otherwise, next line must have data
+			.ELSE
+				inc Row
+				inc TotalRow
+				mov Col, 0
+			.ENDIF
+		.ELSEIF bl == CR ; accept cr only before lf
+			HandleCR
+		.ELSEIF (bl == '-')
+			CurrentIndexToBx
+			invoke ReadNum, bx
+			neg    sword ptr [bx]
+		.ELSEIF (bl <= '9') && (bl >= '0')
+			MoveBack
+			CurrentIndexToBx
+			invoke ReadNum, bx
+		.ELSE
+			jmp ErrorUnexpectedChar
+		.ENDIF
+	NextLoop:
+		jmp MainLoop
 ;====================================================================
 ; Exiting
 	ExitSuccess:
@@ -328,9 +310,8 @@ ReadNum endp
 
 ;====================================================================
 ; Functions
-	ReadEmptyLines proc near
-		SaveRegs ax, bx
-		call     ReadChar
+	ReadEmptyLines proc near uses RegsInvokeUses
+		invoke     ReadChar
 		.WHILE   ax != 0
 			mov bl, FileBuffer
 
@@ -343,9 +324,8 @@ ReadNum endp
 				jmp ErrorUnexpectedChar
 			.ENDIF
 
-			call ReadChar
+			invoke ReadChar
 		.ENDW
-		RestoreRegs
 		ret
 	ReadEmptyLines endp
 
@@ -362,21 +342,16 @@ ReadNum endp
 		ret
 	OpenFile endp
 
-	ReadChar proc near
-		SaveRegs dx
-		lea      dx, FileBuffer
-		call     ReadCharToDX
-		
-		inc FileCol
-		RestoreRegs
+	ReadChar proc near uses RegsReturningOnAX
+		invoke ReadCharTo, addr FileBuffer
+		inc  FileCol
 		ret
 	ReadChar endp
 
-	ReadCharToDX proc near
-		SaveRegs bx, cx
-
+	ReadCharTo proc near uses RegsReturningOnAX, Buffer:ptr byte
+		mov dx, Buffer
 		mov bx, FileHandle
-		mov ah, 3fh
+		mov ah, 3Fh
 		mov cx, 1
 		int 21h
 		jc  ErrorRead
@@ -387,23 +362,41 @@ ReadNum endp
 			mov byte ptr[bx], 0
 		.ENDIF
 
-		RestoreRegs
 		ret
-	ReadCharToDX endp
+	ReadCharTo endp
 
-	PeekChar proc near
-		SaveRegs dx
-
-		lea  dx, PeekBuffer
-		call ReadCharToDX
+	PeekChar proc near uses RegsReturningOnAX
+		invoke ReadCharTo, addr PeekBuffer
 		MoveBack
-
-		RestoreRegs
 		ret
 	PeekChar endp
 
+	ReadNum proc near uses RegsInvokeUses, result:ptr word
+		invoke   ReadChar
+		mov    ax, 0
+		mov    bx, 0
+		mov    cx, 10
+		mov    bl, FileBuffer
+		.while ((bl <= '9') && (bl >= '0'))
+			mul cx
+
+			sub bl, '0'
+			add ax, bx
+
+			push ax
+			invoke ReadChar
+			pop  ax
+			mov  bl, FileBuffer
+		.endw
+		MoveBack
+
+		mov bx,           result
+		mov word ptr[bx], ax
+		ret
+	ReadNum endp
+
 ;====================================================================
-; printf
+; Printf
 	printf_s proc near uses ax bx bp dx, string:ptr byte
 		mov    bx, string
 		.WHILE byte ptr [bx] != 0
@@ -484,5 +477,3 @@ ReadNum endp
 
 ;--------------------------------------------------------------------
 end
-;--------------------------------------------------------------------
-
