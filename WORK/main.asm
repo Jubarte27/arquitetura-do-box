@@ -37,19 +37,18 @@
 	FileCol           dw 1
 	FileLine          dw 1
 
-	Row      dw 0
-	Col      dw 0
-	TotalRow dw 0
-	TotalCol dw 0
+	Row      byte 0
+	Col      byte 0
+	TotalRow byte 0
+	TotalCol byte 0
 
-	numberBeingRead sword ?
-
-	N      dw 0
-	Matrix dw 0
+	N      byte 0
+	; should be at most 7x7
+	Matrix sword (7 * 7) dup (?)
 
 ;====================================================================
 ; Macros
-;--------------------------------------------------------------------
+; -----------------------------------------
 ; Save and restore registers
 	OPEN_DELIMITER    textequ <!<>
 	CLOSE_DELIMITER   textequ <!>>
@@ -157,6 +156,28 @@
 		RestoreRegs
 	endm
 
+	CurrentIndexToBx macro
+		SaveRegs ax
+		mov al, TotalRow
+
+		mov bl, Row
+		mov bh, Col
+		sub bl, 1 ; starting at 0 makes it easier
+		sub bh, 1
+
+		mul bl
+		add al, bh
+
+		; got index, find position in array
+
+		shl ax, 1
+		add ax, offset Matrix
+
+		mov bx, ax
+
+		RestoreRegs
+	endm
+
 ;====================================================================
 ; Program
 	.code
@@ -167,11 +188,11 @@ Main:
 MainLoop:
     call ReadChar
     .IF  ax == 0  ; EOF
-		mov ax, TotalCol
-		dec ax               ; ax = N
-		.IF (TotalRow != ax)
+		mov al, TotalCol
+		dec al               ; ax = N
+		.IF (TotalRow != al)
 			jmp ErrorRowCount
-		.ELSEIF (ax < 2 ) || (ax > 7)
+		.ELSEIF (al < 2 ) || (al > 7)
 			jmp ErrorInvalidN
 		.ENDIF
         jmp ExitSuccess
@@ -186,10 +207,10 @@ MainLoop:
         mov FileCol, 1
 		;====================================================================
 		; On a new line, the number of columns should always be the same
-		mov ax,      Col
+		mov al,      Col
 		.IF Row == 0
-			mov TotalCol, ax
-		.ELSEIF TotalCol != ax
+			mov TotalCol, al
+		.ELSEIF TotalCol != al
 			jmp ErrorColumnCount
 		.ENDIF
 		;====================================================================
@@ -208,11 +229,17 @@ MainLoop:
     .ELSEIF bl == CR ; accept cr only before lf
         HandleCR
 	.ELSEIF (bl == '-')
-		invoke ReadNum, addr numberBeingRead
-		neg numberBeingRead
+		CurrentIndexToBx
+		invoke ReadNum, bx
+		neg sword ptr [bx]
+		invoke printf_d, [bx]
+		printf_c < >
 	.ELSEIF  (bl <= '9') && (bl >= '0')
 		MoveBack
-		invoke ReadNum, addr numberBeingRead
+		CurrentIndexToBx
+		invoke ReadNum, bx
+		invoke printf_d, [bx]
+		printf_c < >
 	.ELSE
         jmp ErrorUnexpectedChar
     .ENDIF
