@@ -7,10 +7,11 @@
 	string_from_word proto near, string:ptr byte, number:word
 	string_from_sword proto near, string:ptr byte, number:sword
 
-	ReadNum proto near, result:ptr word
-	ReadChar proto near
-	ReadCharTo proto near, Buffer:ptr byte
-	PeekChar proto near
+	ReadMatrix     proto near
+	ReadNum        proto near, result:ptr word
+	ReadChar       proto near
+	ReadCharTo     proto near, Buffer:ptr byte
+	PeekChar       proto near
 	ReadEmptyLines proto near
 
 	OpenFile proto near
@@ -147,10 +148,17 @@
 ; Miscellaneous
 	HandleCR macro
 		invoke PeekChar
-		mov  bh, PeekBuffer
-		.IF  bh != LF
+		mov    bh, PeekBuffer
+		.IF    bh != LF
 			jmp ErrorUnexpectedChar
 		.ENDIF
+	endm
+
+	CloseFileHandle macro
+		mov ah,         3eh
+		mov bx,         FileHandle
+		int 21h
+		mov FileIsOpen, 1          ; 1 means it is now closed
 	endm
 
 	MoveBack macro
@@ -192,65 +200,8 @@
 ; Program
 	.code
 	.startup
-	Main:
-		invoke OpenFile
-		
-	MainLoop:
-		invoke ReadChar
-		.IF  ax == 0  ; EOF
-			mov al, TotalCol
-			dec al               ; ax = N
-			.IF (TotalRow != al)
-				jmp ErrorRowCount
-			.ELSEIF (al < 2 ) || (al > 7)
-				jmp ErrorInvalidN
-			.ENDIF
-			jmp ExitSuccess
-		.ENDIF
-
-		mov bl, FileBuffer
-
-		.IF bl == COL_SEPARATOR
-			inc Col
-		.ELSEIF bl == LF
-			inc FileLine
-			mov FileCol, 1
-			;====================================================================
-			; On a new line, the number of columns should always be the same
-			mov al,      Col
-			.IF Row == 0
-				mov TotalCol, al
-			.ELSEIF TotalCol != al
-				jmp ErrorColumnCount
-			.ENDIF
-			;====================================================================
-			; If next line is empty, all next lines should be empty
-			invoke PeekChar
-			mov  bh, PeekBuffer
-			.IF  bh == LF || bh == CR
-				invoke ReadEmptyLines
-			;====================================================================
-			; Otherwise, next line must have data
-			.ELSE
-				inc Row
-				inc TotalRow
-				mov Col, 0
-			.ENDIF
-		.ELSEIF bl == CR ; accept cr only before lf
-			HandleCR
-		.ELSEIF (bl == '-')
-			CurrentIndexToBx
-			invoke ReadNum, bx
-			neg    sword ptr [bx]
-		.ELSEIF (bl <= '9') && (bl >= '0')
-			MoveBack
-			CurrentIndexToBx
-			invoke ReadNum, bx
-		.ELSE
-			jmp ErrorUnexpectedChar
-		.ENDIF
-	NextLoop:
-		jmp MainLoop
+	invoke ReadMatrix
+	jmp    ExitSuccess
 ;====================================================================
 ; Exiting
 	ExitSuccess:
@@ -263,15 +214,12 @@
 
 	ExitAndClose:
 		.IF FileIsOpen
-			mov ah,         3eh
-			mov bx,         FileHandle
-			int 21h
-			mov FileIsOpen, 1          ; file is now closed
+			CloseFileHandle
 		.ENDIF
 		.exit
 
 ;====================================================================
-; Error reporting
+; Reading error reporting
 	ErrorOpen:
 		printf_c <Erro na abertura do arquivo.>
 		jmp      ExitFailure
@@ -309,10 +257,10 @@
 
 
 ;====================================================================
-; Functions
+; Reading Functions
 	ReadEmptyLines proc near uses RegsInvokeUses
-		invoke     ReadChar
-		.WHILE   ax != 0
+		invoke ReadChar
+		.WHILE ax != 0
 			mov bl, FileBuffer
 
 			.IF bl == LF
@@ -344,7 +292,7 @@
 
 	ReadChar proc near uses RegsReturningOnAX
 		invoke ReadCharTo, addr FileBuffer
-		inc  FileCol
+		inc    FileCol
 		ret
 	ReadChar endp
 
@@ -372,7 +320,7 @@
 	PeekChar endp
 
 	ReadNum proc near uses RegsInvokeUses, result:ptr word
-		invoke   ReadChar
+		invoke ReadChar
 		mov    ax, 0
 		mov    bx, 0
 		mov    cx, 10
@@ -383,10 +331,10 @@
 			sub bl, '0'
 			add ax, bx
 
-			push ax
+			push   ax
 			invoke ReadChar
-			pop  ax
-			mov  bl, FileBuffer
+			pop    ax
+			mov    bl, FileBuffer
 		.endw
 		MoveBack
 
@@ -394,6 +342,69 @@
 		mov word ptr[bx], ax
 		ret
 	ReadNum endp
+
+	ReadMatrix proc near uses ax bx cx dx bp
+		invoke OpenFile
+		ReadMatrixLoop:
+			invoke ReadChar
+			.IF    ax == 0  ; EOF
+				mov al, TotalCol
+				dec al               ; ax = N
+				.IF (TotalRow != al)
+					jmp ErrorRowCount
+				.ELSEIF (al < 2 ) || (al > 7)
+					jmp ErrorInvalidN
+				.ENDIF
+				jmp EndReading
+			.ENDIF
+
+			mov bl, FileBuffer
+
+			.IF bl == COL_SEPARATOR
+				inc Col
+			.ELSEIF bl == LF
+				inc FileLine
+				mov FileCol, 1
+				;====================================================================
+				; On a new line, the number of columns should always be the same
+				mov al,      Col
+				.IF Row == 0
+					mov TotalCol, al
+				.ELSEIF TotalCol != al
+					jmp ErrorColumnCount
+				.ENDIF
+				;====================================================================
+				; If next line is empty, all next lines should be empty
+				invoke PeekChar
+				mov    bh, PeekBuffer
+				.IF    bh == LF || bh == CR
+					invoke ReadEmptyLines
+				;====================================================================
+				; Otherwise, next line must have data
+				.ELSE
+					inc Row
+					inc TotalRow
+					mov Col, 0
+				.ENDIF
+			.ELSEIF bl == CR
+			; accept CR only before LF
+				HandleCR
+			.ELSEIF (bl == '-')
+				CurrentIndexToBx
+				invoke ReadNum, bx
+				neg    sword ptr [bx]
+			.ELSEIF (bl <= '9') && (bl >= '0')
+				MoveBack
+				CurrentIndexToBx
+				invoke ReadNum, bx
+			.ELSE
+				jmp ErrorUnexpectedChar
+			.ENDIF
+			jmp ReadMatrixLoop
+		EndReading:
+			CloseFileHandle
+		ret
+	ReadMatrix endp
 
 ;====================================================================
 ; Printf
