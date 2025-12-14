@@ -4,21 +4,25 @@
 	printf_s proto near, string:ptr byte
 	printf_u proto near, number:word
 	printf_d proto near, number:sword
+	printf_d_padded proto near, number:sword, padTo:sword
+
 	string_from_word proto near, string:ptr byte, number:word
 	string_from_sword proto near, string:ptr byte, number:sword
 
-	ReadMatrix     proto near
-	ReadNum        proto near, result:ptr word
-	ReadChar       proto near
+	OpenFile       proto near
+	MoveBack       proto near
 	ReadCharTo     proto near, Buffer:ptr byte
+	ReadChar       proto near
 	PeekChar       proto near
+	ReadNum        proto near, result:ptr word
 	ReadEmptyLines proto near
+	ReadMatrix     proto near
 
-	OpenFile proto near
+	PrintMatrix proto near
+
 ;====================================================================
 ; Memory
 		.stack
-
 		.data
 
 	CR            equ 0dh
@@ -26,12 +30,13 @@
 	QUOT          equ 22h
 	SEMI          equ 3Bh
 	COL_SEPARATOR equ SEMI
+	SPACE         equ 20h
 
 	BuffSize       equ 100              ; tam. máximo dos dados lidos no buffer
-	FileName       db  "MAT.TXT",0      ; Nome do arquivo a ser lido
+	FileName       db  "MAT.txt",0      ; Nome do arquivo a ser lido
 	FileBuffer     db  BuffSize dup (?) ; Buffer de leitura do arquivo
 	FileHandle     dw  0                ; Handler do arquivo
-	FileIsOpen     db  1                ; closed at the start
+	FileIsOpen     db  0                ; closed at the start
 	FileNameBuffer db  150 dup (?)
 	caractere      db  0
 
@@ -49,9 +54,10 @@
 	TotalRow byte 0
 	TotalCol byte 0
 
-	N      byte 0
+	N        byte 0
+	NPlusOne byte 0
 	; should be at most 7x7
-	Matrix sword (7 * 7) dup (?)
+	Matrix   sword (7 * 7) dup (?)
 
 ;====================================================================
 ; Macros
@@ -77,33 +83,33 @@
 	endm
 
 	__pushRegs macro regs:req
-		size_s SIZESTR regStack
+		size_s sizestr regStack
 		if     size_s eq 0
-			regStack CATSTR regs
+			regStack catstr regs
 		else
-			regStack CATSTR regs, REG_SET_DELIMITER, regStack
+			regStack catstr regs, REG_SET_DELIMITER, regStack
 		endif
 	endm
 
-	SaveRegs macro regs:VARARG
-		LOCAL reg, comma, regpushed
-		comma     TEXTEQU <>
-		regpushed TEXTEQU <>
-		FOR       reg, <regs>
+	SaveRegs macro regs:vararg
+		local reg, comma, regpushed
+		comma     textequ <>
+		regpushed textequ <>
+		for       reg, <regs>
 			push  reg
-			regpushed CATSTR <reg>, comma, regpushed
-			comma CATSTR <, >
-		ENDM
-		regpushed CATSTR OPEN_DELIMITER, regpushed, CLOSE_DELIMITER
+			regpushed catstr <reg>, comma, regpushed
+			comma catstr <, >
+		endm
+		regpushed catstr OPEN_DELIMITER, regpushed, CLOSE_DELIMITER
 		__pushRegs regpushed
-	ENDM
+	endm
 
-	RestoreRegs MACRO
-		LOCAL reg
-	%	FOR reg, __popRegs(regStack) ;; Pop each register
+	RestoreRegs macro
+		local reg
+	%	for reg, __popRegs(regStack) ;; Pop each register
 			pop reg
-		ENDM
-	ENDM
+		endm
+	endm
 
 	RegsInvokeUses textequ <ax bx cx dx bp>
 
@@ -120,13 +126,13 @@
 
 	printf_c macro string:req
 		SaveRegs ax,   dx
-		FORC     char, <string>
+		forc     char, <string>
 			mov ah, 02h
 			mov dl, '&char'
 			int 21h
-		ENDM
+		endm
 		RestoreRegs
-	ENDM
+	endm
 
 	print_Pair macro line:req, col:req
 		printf_c <(>
@@ -134,11 +140,11 @@
 		printf_c <:>
 		invoke   printf_u, col
 		printf_c <)>
-	ENDM
+	endm
 
 	print_FilePosition macro
 		print_Pair FileLine, FileCol
-	ENDM
+	endm
 
 	print_TotalRowCol macro
 		print_Pair TotalRow, TotalCol
@@ -146,42 +152,23 @@
 
 ;--------------------------------------------------------------------
 ; Miscellaneous
-	HandleCR macro
-		invoke PeekChar
-		mov    bh, PeekBuffer
-		.IF    bh != LF
-			jmp ErrorUnexpectedChar
-		.ENDIF
-	endm
 
 	CloseFileHandle macro
-		mov ah,         3eh
-		mov bx,         FileHandle
-		int 21h
-		mov FileIsOpen, 1          ; 1 means it is now closed
-	endm
-
-	MoveBack macro
-		SaveRegs ax, bx, cx, dx
-		; Move back by one byte
+		mov ah, 3eh
 		mov bx, FileHandle
-		mov ah, 42h
-		mov cx, 0FFFFh     ; Means dx is negative
-		mov dx, -1
-		mov al, 1
 		int 21h
-		jc  ErrorRead
-		RestoreRegs
+		
+		mov FileIsOpen, 0 ; 0 means it is now closed
 	endm
 
 	CurrentIndexToBx macro
+		; returns in bx
 		SaveRegs ax
-		mov      al, TotalRow
+		mov      al, TotalCol
+		inc      al           ; TotalCol starts at 0
 
 		mov bl, Row
 		mov bh, Col
-		sub bl, 1   ; starting at 0 makes it easier
-		sub bh, 1
 
 		mul bl
 		add al, bh
@@ -201,6 +188,7 @@
 	.code
 	.startup
 	invoke ReadMatrix
+	invoke PrintMatrix
 	jmp    ExitSuccess
 ;====================================================================
 ; Exiting
@@ -213,9 +201,9 @@
 		jmp ExitAndClose
 
 	ExitAndClose:
-		.IF FileIsOpen
+		.if (FileIsOpen)
 			CloseFileHandle
-		.ENDIF
+		.endif
 		.exit
 
 ;====================================================================
@@ -258,22 +246,31 @@
 
 ;====================================================================
 ; Reading Functions
+
+	HandleCR macro
+		invoke PeekChar
+		mov    bh, PeekBuffer
+		.if    bh != LF
+			jmp ErrorUnexpectedChar
+		.endif
+	endm
+	
 	ReadEmptyLines proc near uses RegsInvokeUses
 		invoke ReadChar
-		.WHILE ax != 0
+		.while ax != 0
 			mov bl, FileBuffer
 
-			.IF bl == LF
+			.if bl == LF
 				inc FileLine
 				mov FileCol, 1
-			.ELSEIF bl == CR
+			.elseif bl == CR
 				HandleCR
-			.ELSE
+			.else
 				jmp ErrorUnexpectedChar
-			.ENDIF
+			.endif
 
 			invoke ReadChar
-		.ENDW
+		.endw
 		ret
 	ReadEmptyLines endp
 
@@ -285,7 +282,7 @@
 		int      21h
 		jc       ErrorOpen
 		mov      FileHandle, ax
-		mov      FileIsOpen, 0        ; 0 means it is open, anything else it is closed
+		mov      FileIsOpen, 1
 		RestoreRegs
 		ret
 	OpenFile endp
@@ -305,17 +302,30 @@
 		jc  ErrorRead
 
 		; EOF
-		.IF ax == 0
+		.if ax == 0
 			mov bx,           dx
 			mov byte ptr[bx], 0
-		.ENDIF
+		.endif
 
 		ret
 	ReadCharTo endp
 
+	MoveBack proc near uses RegsInvokeUses
+		; Move back by one byte
+		mov bx, FileHandle
+
+		mov ah, 42h
+		mov cx, 0FFFFh ; Means dx is negative
+		mov dx, -1
+		mov al, 1
+		int 21h
+		jc  ErrorRead
+		ret
+	MoveBack endp
+
 	PeekChar proc near uses RegsReturningOnAX
 		invoke ReadCharTo, addr PeekBuffer
-		MoveBack
+		invoke MoveBack
 		ret
 	PeekChar endp
 
@@ -336,7 +346,7 @@
 			pop    ax
 			mov    bl, FileBuffer
 		.endw
-		MoveBack
+		invoke MoveBack
 
 		mov bx,           result
 		mov word ptr[bx], ax
@@ -347,59 +357,61 @@
 		invoke OpenFile
 		ReadMatrixLoop:
 			invoke ReadChar
-			.IF    ax == 0  ; EOF
-				mov al, TotalCol
-				dec al               ; ax = N
-				.IF (TotalRow != al)
+			.if    ax == 0  ; EOF
+				mov al,       TotalCol
+				mov NPlusOne, al
+				dec al                 ; ax = N
+				mov N,        al
+				.if (TotalRow != al)
 					jmp ErrorRowCount
-				.ELSEIF (al < 2 ) || (al > 7)
+				.elseif (al < 2 ) || (al > 7)
 					jmp ErrorInvalidN
-				.ENDIF
+				.endif
 				jmp EndReading
-			.ENDIF
+			.endif
 
 			mov bl, FileBuffer
 
-			.IF bl == COL_SEPARATOR
+			.if bl == COL_SEPARATOR
 				inc Col
-			.ELSEIF bl == LF
+			.elseif bl == LF
 				inc FileLine
 				mov FileCol, 1
 				;====================================================================
 				; On a new line, the number of columns should always be the same
 				mov al,      Col
-				.IF Row == 0
+				.if Row == 0
 					mov TotalCol, al
-				.ELSEIF TotalCol != al
+				.elseif TotalCol != al
 					jmp ErrorColumnCount
-				.ENDIF
+				.endif
 				;====================================================================
 				; If next line is empty, all next lines should be empty
 				invoke PeekChar
 				mov    bh, PeekBuffer
-				.IF    bh == LF || bh == CR
+				.if    bh == LF || bh == CR
 					invoke ReadEmptyLines
 				;====================================================================
 				; Otherwise, next line must have data
-				.ELSE
+				.else
 					inc Row
 					inc TotalRow
 					mov Col, 0
-				.ENDIF
-			.ELSEIF bl == CR
+				.endif
+			.elseif bl == CR
 			; accept CR only before LF
 				HandleCR
-			.ELSEIF (bl == '-')
+			.elseif (bl == '-')
 				CurrentIndexToBx
 				invoke ReadNum, bx
 				neg    sword ptr [bx]
-			.ELSEIF (bl <= '9') && (bl >= '0')
-				MoveBack
+			.elseif (bl <= '9') && (bl >= '0')
+				invoke MoveBack
 				CurrentIndexToBx
 				invoke ReadNum, bx
-			.ELSE
+			.else
 				jmp ErrorUnexpectedChar
-			.ENDIF
+			.endif
 			jmp ReadMatrixLoop
 		EndReading:
 			CloseFileHandle
@@ -408,48 +420,97 @@
 
 ;====================================================================
 ; Printf
-	printf_s proc near uses ax bx bp dx, string:ptr byte
+
+	PrintMatrix proc near uses RegsInvokeUses
+		mov      bx, offset Matrix
+		mov      dx, 8
+		mov      cx, 0             ; High has row, Low has column
+		.ForRow:                   ; for (row = 0; row <= N; row++)
+			cmp ch, N      ; row <= N
+			jg  .EndForRow
+
+			mov      cl, 0 ; col = 0
+			.ForCol:       ; for (col = 0; col <= NPlusOne; col++)
+				cmp cl, NPlusOne ; col <= NPlusOne
+				jg  .EndForCol
+
+				mov ax, sword ptr [bx]
+				invoke printf_d_padded, ax, dx
+
+				add bx, 2 ; size in bytes of a sword
+
+				inc cl      ; col ++
+				jmp .ForCol
+			.EndForCol:
+			putc LF
+
+			inc ch      ; row++
+			jmp .ForRow
+		.EndForRow:
+		ret
+	PrintMatrix endp
+
+	printf_s proc near uses RegsInvokeUses, string:ptr byte
 		mov    bx, string
-		.WHILE byte ptr [bx] != 0
+		.while byte ptr [bx] != 0
 			mov ah, 2
 			mov dl, [bx]
 			int 21H
 			inc bx
-		.ENDW
+		.endw
 		ret
 	printf_s endp
 
-	printf_u PROC near uses ax bx cx dx bp, number:word
+	printf_u proc near uses RegsInvokeUses, number:word
 		local  buf[6]:byte
 		invoke string_from_word, addr buf, number
 		invoke printf_s, addr buf
 		ret
-	printf_u ENDP
+	printf_u endp
 
-	printf_d PROC near uses ax bx cx dx bp, number:sword
+	printf_d proc near uses RegsInvokeUses, number:sword
 		local  buf[7]:byte
 		invoke string_from_sword, addr buf, number
 		invoke printf_s, addr buf
 		ret
-	printf_d ENDP
+	printf_d endp
+	
+	printf_d_padded proc near uses RegsInvokeUses, number:sword, padTo:sword
+		local  buf[7]:byte
+		invoke string_from_sword, addr buf, number
+		; string_from_sword gives length on AX
+		mov    cx, padTo
+		sub    cx, ax
+		.WHILE (sword ptr cx > 0)
+			putc SPACE
+			dec  cx
+		.ENDW
+		invoke printf_s, addr buf
+		ret
+	printf_d_padded endp
 
-	string_from_sword proc near uses ax bx cx dx bp, string:ptr byte, number:sword
+	; length of string goes to ax (including sign)
+	string_from_sword proc near uses RegsReturningOnAX, string:ptr byte, number:sword
 		mov dx, number
 		mov bx, string
+		mov cx, 0
 		.if (sword ptr dx < 0)
 			mov byte ptr[bx], '-'
 			inc bx
+			inc cx
 			neg dx
 		.endif
 		invoke string_from_word, bx, dx
+		add ax, cx
 		ret
 	string_from_sword endp
 
-	string_from_word proc near uses ax bx cx dx si bp, string:ptr byte, number:word
+	; length of string goes to ax
+	string_from_word proc near uses RegsReturningOnAX si, string:ptr byte, number:word
 		local value:word, divisor:word, first:byte
 
 		mov divisor, 10000
-		mov first,   1     ; 0 is true
+		mov first,   1     ; anything not 0 is true
 
 		mov ax,    number
 		mov value, ax
@@ -462,7 +523,7 @@
 			div divisor
 			mov value, dx
 
-			.if (ax != 0) || (first == 0)
+			.if (ax != 0) || (!first) ; no zeroes on the left
 				add al,            '0'
 				mov byte ptr [bx], al
 				inc bx
@@ -477,14 +538,18 @@
 
 		.untilcxz
 
-		.IF (first == 1)
+		.if (first)
 			mov byte ptr [bx], '0'
 			inc bx
-		.ENDIF
+		.endif
+
+		mov cx, string
+		mov ax, bx
+		sub ax, cx     ; ax = bx - string = len
 
 		mov byte ptr [bx], 0
 		ret
-	string_from_word ENDP
+	string_from_word endp
 
 ;--------------------------------------------------------------------
 end
