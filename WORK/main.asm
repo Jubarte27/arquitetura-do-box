@@ -21,8 +21,14 @@
 
 	ParseCommand proto near
 	ReadCommand  proto near
-	MULMatrix   proto near, LINHA:byte, CONSTANTE: sword
+	
+	MULMatrix proto near, LINHA:byte, CONSTANTE: sword
+	DIVMatrix proto near, LINHA:byte, CONSTANTE: sword
+
 	ADDMatrix proto near, LINHA_DST:byte, LINHA_ORG: byte
+	SUBMatrix proto near, LINHA_DST:byte, LINHA_ORG: byte
+
+	WRITEMatrix proto near, NOME:ptr byte
 
 	PrintMatrix proto near
 
@@ -30,6 +36,15 @@
 ; Memory
 		.stack
 		.data
+	
+
+	CMD_NONE  EQU 0
+	CMD_MUL   EQU 1
+	CMD_DIV   EQU 2
+	CMD_ADD   EQU 3
+	CMD_SUB   EQU 4
+	CMD_UNDO  EQU 5
+	CMD_WRITE EQU 6
 
 	CR            equ 0dh
 	LF            equ 0ah
@@ -37,6 +52,9 @@
 	SEMI          equ 3Bh
 	COL_SEPARATOR equ SEMI
 	SPACE         equ 20h
+
+	COLUMN_SEP db ";",0
+	CRLF       db CR, LF, 0
 
 	BuffSize       equ 100              ; tam. máximo dos dados lidos no buffer
 	FileName       db  "MAT.txt",0      ; Nome do arquivo a ser lido
@@ -50,6 +68,12 @@
 	CommandBufferLength db 0          ; max length, actual length
 	CommandBufferString db 254 dup(0)
 
+	LastCommand   db 0
+	LastCommand@a dw 0
+	LastCommand@b sword 0
+	LastCommand@exists db 0
+
+
 	NonTerminalErrorBuffer db 255 dup(0)
 
 	@Comando      db "Comando",0
@@ -58,14 +82,17 @@
 	@parametro    db "parametro",0
 	@@parametro   db "Parametro",0
 	@desconhecido db "desconhecido",0
+	@space        db " ",0
 
-	@deve_estar_entre_1_e_N db "deve estar entre 1 e N"
+	@deve_estar_entre_1_e_N                           db "deve estar entre 1 e N",0
+	@@nao_foi_possivel_abrir_ou_criar_o_arquivo       db "Nao foi possivel abrir ou criar o arquivo",0
+	@@parametros_nao_reconhecidos_ao_final_do_comando db "Parametros nao reconhecidos ao final do comando",0
 	
 	COLON_SPACE db ": ",0
 
 	ExplanationSeparator textequ <COLON_SPACE>
 
-	MsgCRLF           db CR, LF, 0
+
 	; Used on PeekChar
 	PeekBuffer        db ?
 	; Used when reporting the error
@@ -241,6 +268,11 @@
 		<@@parametro, !< &paramName !>, @deve_estar_entre_1_e_N, ExplanationSeparator, CommandBufferString>
 	endm
 
+	ErrorCantOpenNorCreate macro
+		strcpy_all                                    NonTerminalErrorBuffer, \
+		<@@nao_foi_possivel_abrir_ou_criar_o_arquivo, ExplanationSeparator,   CommandBufferString>
+	endm
+
 	CloseFileHandle macro
 		mov ah, 3eh
 		mov bx, FileHandle
@@ -278,44 +310,84 @@
 	invoke ReadMatrix
 	@whiletrue:
 		invoke PrintMatrix
+		@SkipPrint:
 		invoke ReadCommand
 		@Validate:
-			jnc @ValidCommand
+			jnc    @ValidCommand
 			invoke printf_s,      addr NonTerminalErrorBuffer
 			lea    bx,            NonTerminalErrorBuffer
 			mov    byte ptr [bx], 0
-			putc CR
-			putc LF
+			putc   CR
+			putc   LF
 			invoke ReadCommand
-			jmp @Validate
+			jmp    @Validate
 		@ValidCommand:
 
 		cmp ax, CMD_ADD
-		je @Main@ADD
+		je  @Main@ADD
 		cmp ax, CMD_MUL
-		je @Main@MUL
+		je  @Main@MUL
 		cmp ax, CMD_UNDO
-		je @Main@UNDO
+		je  @Main@UNDO
 		cmp ax, CMD_WRITE
-		je @Main@WRITE
+		je  @Main@WRITE
 
+		jmp ExitSuccess
+		
+		@MainLoopEnd:
 		putc CR
 		putc LF
-		@MainLoopEnd:
 	jmp @whiletrue
-	jmp ExitSuccess
 
 	@Main@ADD:
+		mov LastCommand,        CMD_ADD
+		mov bh,                 0
+		mov LastCommand@a,      bx
+		mov ch,                 0
+		mov LastCommand@b,      cx
+		mov LastCommand@exists, 1
+
 		invoke ADDMatrix, bl, cl
+
 		jmp @MainLoopEnd
 	@Main@MUL:
+		mov LastCommand,        CMD_MUL
+		mov bh,                 0
+		mov LastCommand@a,      bx
+		mov LastCommand@b,      sword ptr cx
+		mov LastCommand@exists, 1
+
 		invoke MULMatrix, bl, cx
 		jmp @MainLoopEnd
 	@Main@UNDO:
+		mov al, LastCommand@exists
+		.if !al
+			jmp @MainLoopEnd
+		.endif
+		mov al,           LastCommand
+		mov bx,           LastCommand@a
+		mov sword ptr cx, LastCommand@b
+		.if (al == CMD_ADD)
+			invoke SUBMatrix, bl, cl
+			mov LastCommand, CMD_SUB
+		.elseif (al == CMD_MUL)
+			invoke DIVMatrix, bl, cx
+			mov LastCommand, CMD_DIV
+		.elseif (al == CMD_SUB)
+			invoke ADDMatrix, bl, cl
+			mov LastCommand, CMD_ADD
+		.elseif (al == CMD_DIV)
+			invoke MULMatrix, bl, cx
+			mov LastCommand, CMD_MUL
+		.endif
 		jmp @MainLoopEnd
 	@Main@WRITE:
-		jmp @MainLoopEnd
+		invoke WRITEMatrix, dx
+		jmp    @SkipPrint
 
+
+;====================================================================
+; MUL
 	MULMatrix proc near uses RegsInvokeUses, LINHA:byte, CONSTANTE: sword
 		mov al, LINHA
 		dec al
@@ -332,16 +404,46 @@
 		mov cl, NPlusOne
 
 		MULMatrix@Loop:
-			mov ax, sword ptr [bx]
+			mov  ax,             sword ptr [bx]
 			imul CONSTANTE
-			mov sword ptr [bx], ax
+			mov  sword ptr [bx], ax
 
-			add bx, 2
+			add  bx, 2
 			loop MULMatrix@Loop
 
 		ret
 	MULMatrix endp
 
+	DIVMatrix proc near uses RegsInvokeUses, LINHA:byte, CONSTANTE: sword
+		mov al, LINHA
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+
+		shl ax, 1
+
+		mov bx, offset Matrix
+		add bx, ax
+
+		mov ch, 0
+		mov cl, NPlusOne
+		DIVMatrix@Loop:
+			mov ax, sword ptr [bx]
+			cwd                    ; extend sign to dx
+			
+			idiv CONSTANTE
+			
+			mov sword ptr [bx], ax
+
+			add  bx, 2
+			loop DIVMatrix@Loop
+
+		ret
+	DIVMatrix endp
+
+;====================================================================
+; ADD
 	ADDMatrix proc near uses RegsInvokeUses di si, LINHA_DST:byte, LINHA_ORG: byte
 		local SRC:ptr sword, DST:ptr sword
 
@@ -369,19 +471,155 @@
 		mov ch, 0
 		mov cl, NPlusOne
 		ADDMatrix@Loop:
-			mov ax, [di]
-			add ax, [si]
+			mov ax,   [di]
+			add ax,   [si]
 			mov [di], ax
 
-			add di, 2
-			add si, 2
+			add  di, 2
+			add  si, 2
 			loop ADDMatrix@Loop
 
 		ret
 	ADDMatrix endp
-	
+
+	SUBMatrix proc near uses RegsInvokeUses di si, LINHA_DST:byte, LINHA_ORG: byte
+		local SRC:ptr sword, DST:ptr sword
+
+		mov al, LINHA_DST
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+		shl ax, 1
+		
+		lea di, Matrix
+		add di, ax
+
+
+		mov al, LINHA_ORG
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+		shl ax, 1
+
+		lea si, Matrix
+		add si, ax
+
+		mov ch, 0
+		mov cl, NPlusOne
+		SUBMatrix@Loop:
+			mov ax,   [di]
+			sub ax,   [si]
+			mov [di], ax
+
+			add  di, 2
+			add  si, 2
+			loop SUBMatrix@Loop
+
+		ret
+	SUBMatrix endp
+
+;====================================================================
+; WRITE
+
+	WriteToFile macro handle:req, offset_buf:req, len:req
+		SaveRegs bx, cx, dx
+
+		mov cx, len
+		mov bx, handle
+		lea dx, offset_buf
+		mov ah, 40h
+		int 21h
+
+		RestoreRegs
+	endm
+	WRITEMatrix proc near uses RegsInvokeUses di si, NOME:ptr byte
+		local buf[7]:byte, handle:word
+		mov   ah,          3Dh         ; open
+		mov   al,          02h         ; read/write
+		mov   dx,          NOME
+		int   21h
+		jc    create_file              ; if not exists
+
+		mov bx, ax      ; BX = file handle
+		jmp file_opened
+
+		create_file:
+		mov ah, 3Ch  ; create
+		mov cx, 0
+		mov dx, NOME
+		int 21h
+		mov bx, ax
+
+		file_opened:
+		mov ah, 42h
+		mov al, 02h ; SEEK_END
+		xor cx, cx
+		xor dx, dx
+		int 21h
+
+		.if (carry?)
+			ErrorCantOpenNorCreate
+			stc
+			ret
+		.endif
+
+		mov handle, bx
+		mov bx,     0  ; Low tells if its not first column
+
+		mov di, offset Matrix
+		mov cx, 0             ; High has row, Low has column
+		
+		WRITEMatrix@ForRow: ; for (row = 0; row < N; row++)
+			cmp ch, N                 ; row < N
+			jge WRITEMatrix@EndForRow
+
+			mov bl, 0 ; new first column
+			mov cl, 0 ; col = 0
+			
+			WRITEMatrix@ForCol: ; for (col = 0; col < NPlusOne; col++)
+				cmp cl, NPlusOne          ; col < NPlusOne
+				jge WRITEMatrix@EndForCol
+
+				.if (bl) ; no longer firstCol?
+					WriteToFile handle, COLUMN_SEP, 1
+				.endif
+
+				mov ax, sword ptr [di]
+
+				invoke string_from_sword, addr buf, ax ; ax now has length
+
+				WriteToFile handle, buf, ax
+
+				add di, 2 ; size in bytes of a sword
+
+				mov bl, 1 ; no longer first col
+				inc cl    ; col ++
+				
+				jmp WRITEMatrix@ForCol
+			WRITEMatrix@EndForCol:
+
+			WriteToFile handle, CRLF, 2
+
+			inc ch ; row++
+			
+			jmp WRITEMatrix@ForRow
+		WRITEMatrix@EndForRow:
+
+		clc
+		ret
+	WRITEMatrix endp
 ;====================================================================
 ; Exiting
+	ExitTerminated proc far
+		.if (FileIsOpen)
+			CloseFileHandle
+		.endif
+		stc
+		ret far
+	ExitTerminated endp
+
 	ExitSuccess:
 		mov al, 0
 		jmp ExitAndClose
@@ -446,22 +684,9 @@
 			RestoreRegs
 	endm
 
-
-	CMD_NONE  EQU 0
-	CMD_MUL   EQU 1
-	CMD_ADD   EQU 2
-	CMD_UNDO  EQU 3
-	CMD_WRITE EQU 4
-	; OUT:
-	;   AX = command ID (CMD_*)
-	;   BX = param1 (if any)
-	;   CX = param2 (if any)
-	;   DX = offset of string (WRITE)
-	; CF = 1 on error
-
 	SkipSpacesInSI macro string:req
-		.while BYTE PTR [string] == ' '
-			inc si
+		.while (BYTE PTR [string] == ' ' )
+			inc string
 		.endw
 	endm
 
@@ -471,7 +696,6 @@
 		mov bx, 0
 		mov si, string
 		mov cx, 0
-		mov dx, 10
 
 		.if byte ptr [si] == '-'
 			inc si
@@ -479,7 +703,8 @@
 		.endif
 
 		.while (byte ptr [si] >= '0') && (byte ptr [si] <= '9')
-			mul cx
+			mov dx, 10
+			mul dx
 
 			mov bl, [si]
 			sub bl, '0'
@@ -508,7 +733,7 @@
 	skipAndRead macro string:req, numberInMemory:req, resultReg:req
 		SkipSpacesInSI string
 		invoke ReadNumFromString, string, addr numberInMemory
-		.if (carry?)
+		.if            (carry?)
 			stc
 		.else
 			mov resultReg, numberInMemory
@@ -526,6 +751,11 @@
 		.endif
 	endm
 
+
+	;   AX = command ID (CMD_*)
+	;   BX = param1 (if any)
+	;   CX = param2 (if any)
+	;   DX = offset of string (WRITE)
 	ParseCommand proc near uses si di bp
 		local a:sword
 
@@ -537,8 +767,10 @@
 		jumpIfSIComparesTo <ADD> ParseCommand@ADD
 		jumpIfSIComparesTo <UNDO> ParseCommand@UNDO
 		jumpIfSIComparesTo <WRITE> ParseCommand@WRITE
+		jumpIfSIComparesTo <EXIT> ParseCommand@EXIT
+		jumpIfSIComparesTo <QUIT> ParseCommand@EXIT
 	
-		strcpy_all NonTerminalErrorBuffer, <@Comando, @desconhecido, ExplanationSeparator, CommandBufferString>
+		strcpy_all NonTerminalErrorBuffer, @Comando, @space, @desconhecido, ExplanationSeparator, CommandBufferString
 	ParseCommand@error:
 		stc
 		ret
@@ -546,9 +778,9 @@
 
 		skipAndRead si, a, bx
 		jc  ParseCommand@LINHA_AUSENTE
-		cmp bx, word ptr [N]
+		cmp bl, N
 		jg  ParseCommand@LINHA_INVALIDA
-		cmp bx, 1
+		cmp bl, 1
 		jl  ParseCommand@LINHA_INVALIDA
 		
 		skipAndRead si, a, cx
@@ -562,16 +794,16 @@
 
 		skipAndRead si, a, bx
 		jc  ParseCommand@LINHA_DST_AUSENTE
-		cmp bx, word ptr [N]
+		cmp bl, N
 		jg  ParseCommand@LINHA_DST_INVALIDA
-		cmp bx, 1
+		cmp bl, 1
 		jl  ParseCommand@LINHA_DST_INVALIDA
 
 		skipAndRead si, a, cx
 		jc  ParseCommand@LINHA_ORG_AUSENTE
-		cmp bx, word ptr [N]
+		cmp cl, N
 		jg  ParseCommand@LINHA_ORG_INVALIDA
-		cmp bx, 1
+		cmp cl, 1
 		jl  ParseCommand@LINHA_ORG_INVALIDA
 
 
@@ -588,6 +820,12 @@
 		
 		mov dx, si               ; filename pointer
 		mov ax, CMD_WRITE
+		.while (BYTE PTR [si] != 0)
+			inc si
+		.endw
+		jmp ParseCommand@success
+
+	ParseCommand@EXIT:
 		jmp ParseCommand@success
 
 	ParseCommand@LINHA_AUSENTE:
@@ -619,8 +857,17 @@
 		ErrorNumberOutOfBounds <LINHA_ORG>
 		
 		jmp ParseCommand@error
-	
 	ParseCommand@success:
+
+		SkipSpacesInSI si
+		
+		.if (byte ptr [si] != 0)
+		
+			strcpy_all                                          NonTerminalErrorBuffer, \
+			<@@parametros_nao_reconhecidos_ao_final_do_comando, ExplanationSeparator,   CommandBufferString>
+			
+			jmp ParseCommand@error
+		.endif
 		clc
 		ret
 	ParseCommand endp
@@ -784,10 +1031,10 @@
 			invoke ReadChar
 			.if    ax == 0  ; EOF
 				mov al,       TotalCol
-				inc al ; TotalCol starts at 0
+				inc al                 ; TotalCol starts at 0
 				mov NPlusOne, al
 				dec al                 ; ax = N
-				mov N,        al ; TotalCol starts at 0
+				mov N,        al       ; TotalCol starts at 0
 				dec al
 				.if (TotalRow != al)
 					jmp ErrorRowCount
@@ -854,12 +1101,12 @@
 		mov      cx, 0             ; High has row, Low has column
 		.ForRow:                   ; for (row = 0; row < N; row++)
 			cmp ch, N      ; row < N
-			jge  .EndForRow
+			jge .EndForRow
 
 			mov      cl, 0 ; col = 0
 			.ForCol:       ; for (col = 0; col < NPlusOne; col++)
 				cmp cl, NPlusOne ; col < NPlusOne
-				jge  .EndForCol
+				jge .EndForCol
 
 				mov ax, sword ptr [bx]
 				invoke printf_d_padded, ax, dx
