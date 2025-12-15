@@ -614,6 +614,15 @@
 			jmp WRITEMatrix@ForRow
 		WRITEMatrix@EndForRow:
 
+		; closeFile
+		mov ah, 3eh
+		mov bx, handle
+		int 21h
+
+		; Reset Disk
+		mov ah, 0Dh
+		int 21h
+
 		clc
 		ret
 	WRITEMatrix endp
