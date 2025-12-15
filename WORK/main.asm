@@ -323,14 +323,16 @@
 			jmp    @Validate
 		@ValidCommand:
 
-		cmp ax, CMD_ADD
-		je  @Main@ADD
-		cmp ax, CMD_MUL
-		je  @Main@MUL
-		cmp ax, CMD_UNDO
-		je  @Main@UNDO
-		cmp ax, CMD_WRITE
-		je  @Main@WRITE
+		.if (ax == CMD_ADD)
+			call Main@ADD
+		.elseif  (ax == CMD_MUL)
+			call Main@MUL
+		.elseif (ax == CMD_UNDO)
+			call Main@UNDO
+		.elseif (ax == CMD_WRITE)
+			call Main@WRITE
+			jmp  @SkipPrint
+		.endif
 
 		jmp ExitSuccess
 		
@@ -339,7 +341,7 @@
 		putc LF
 	jmp @whiletrue
 
-	@Main@ADD:
+	Main@ADD proc near
 		mov LastCommand,        CMD_ADD
 		mov bh,                 0
 		mov LastCommand@a,      bx
@@ -349,8 +351,9 @@
 
 		invoke ADDMatrix, bl, cl
 
-		jmp @MainLoopEnd
-	@Main@MUL:
+		ret
+	Main@ADD endp
+	Main@MUL proc near
 		mov LastCommand,        CMD_MUL
 		mov bh,                 0
 		mov LastCommand@a,      bx
@@ -358,8 +361,9 @@
 		mov LastCommand@exists, 1
 
 		invoke MULMatrix, bl, cx
-		jmp @MainLoopEnd
-	@Main@UNDO:
+		ret
+	Main@MUL endp
+	Main@UNDO proc near
 		mov al, LastCommand@exists
 		.if !al
 			jmp @MainLoopEnd
@@ -380,10 +384,12 @@
 			invoke MULMatrix, bl, cx
 			mov LastCommand, CMD_MUL
 		.endif
-		jmp @MainLoopEnd
-	@Main@WRITE:
+		ret
+	Main@UNDO  endp
+	Main@WRITE proc near
 		invoke WRITEMatrix, dx
-		jmp    @SkipPrint
+		ret
+	Main@WRITE endp
 
 
 ;====================================================================
@@ -445,7 +451,6 @@
 ;====================================================================
 ; ADD
 	ADDMatrix proc near uses RegsInvokeUses di si, LINHA_DST:byte, LINHA_ORG: byte
-		local SRC:ptr sword, DST:ptr sword
 
 		mov al, LINHA_DST
 		dec al
@@ -483,7 +488,6 @@
 	ADDMatrix endp
 
 	SUBMatrix proc near uses RegsInvokeUses di si, LINHA_DST:byte, LINHA_ORG: byte
-		local SRC:ptr sword, DST:ptr sword
 
 		mov al, LINHA_DST
 		dec al
@@ -612,27 +616,26 @@
 	WRITEMatrix endp
 ;====================================================================
 ; Exiting
-	ExitTerminated proc far
-		.if (FileIsOpen)
-			CloseFileHandle
-		.endif
-		stc
-		ret far
-	ExitTerminated endp
 
-	ExitSuccess:
+	ExitSuccess proc near
 		mov al, 0
 		jmp ExitAndClose
+		ret
+	ExitSuccess endp
 
-	ExitFailure:
+	ExitFailure proc near
 		mov al, 1
 		jmp ExitAndClose
+		ret
+	ExitFailure endp
 
-	ExitAndClose:
+	ExitAndClose proc near
 		.if (FileIsOpen)
 			CloseFileHandle
 		.endif
 		.exit
+		ret
+	ExitAndClose endp
 
 ;====================================================================
 ; Reading input
@@ -777,14 +780,22 @@
 	ParseCommand@MUL:
 
 		skipAndRead si, a, bx
-		jc  ParseCommand@LINHA_AUSENTE
-		cmp bl, N
-		jg  ParseCommand@LINHA_INVALIDA
-		cmp bl, 1
-		jl  ParseCommand@LINHA_INVALIDA
+		.if (carry?)
+			call ParseCommand@LINHA_AUSENTE
+			jmp ParseCommand@error
+		.elseif (bl > N)
+			call ParseCommand@LINHA_INVALIDA
+			jmp ParseCommand@error
+		.elseif (bl < 1)
+			call ParseCommand@LINHA_INVALIDA
+			jmp ParseCommand@error
+		.endif
 		
 		skipAndRead si, a, cx
-		jc ParseCommand@CONSTANTE_AUSENTE
+		.if (carry?)
+			call ParseCommand@CONSTANTE_AUSENTE
+			jmp ParseCommand@error
+		.endif
 
 		mov ax, CMD_MUL
 
@@ -793,19 +804,28 @@
 	ParseCommand@ADD:
 
 		skipAndRead si, a, bx
-		jc  ParseCommand@LINHA_DST_AUSENTE
-		cmp bl, N
-		jg  ParseCommand@LINHA_DST_INVALIDA
-		cmp bl, 1
-		jl  ParseCommand@LINHA_DST_INVALIDA
+		.if (carry?)
+			call ParseCommand@LINHA_DST_AUSENTE
+			jmp ParseCommand@error
+		.elseif (bl > N)
+			call ParseCommand@LINHA_DST_INVALIDA
+			jmp ParseCommand@error
+		.elseif (bl < 1)
+			call ParseCommand@LINHA_DST_INVALIDA
+			jmp ParseCommand@error
+		.endif
 
 		skipAndRead si, a, cx
-		jc  ParseCommand@LINHA_ORG_AUSENTE
-		cmp cl, N
-		jg  ParseCommand@LINHA_ORG_INVALIDA
-		cmp cl, 1
-		jl  ParseCommand@LINHA_ORG_INVALIDA
-
+		.if (carry?)
+			call ParseCommand@LINHA_ORG_AUSENTE
+			jmp ParseCommand@error
+		.elseif (bl > N)
+			call ParseCommand@LINHA_ORG_INVALIDA
+			jmp ParseCommand@error
+		.elseif (bl < 1)
+			call ParseCommand@LINHA_ORG_INVALIDA
+			jmp ParseCommand@error
+		.endif
 
 		mov ax, CMD_ADD
 		
@@ -818,8 +838,8 @@
 	ParseCommand@WRITE:
 		SkipSpacesInSI si
 		
-		mov dx, si               ; filename pointer
-		mov ax, CMD_WRITE
+		mov    dx, si               ; filename pointer
+		mov    ax, CMD_WRITE
 		.while (BYTE PTR [si] != 0)
 			inc si
 		.endw
@@ -828,37 +848,7 @@
 	ParseCommand@EXIT:
 		jmp ParseCommand@success
 
-	ParseCommand@LINHA_AUSENTE:
-		ErrorCommandExpectsNumber <"MUL">, <LINHA>, <PRIMEIRO>
-		jmp ParseCommand@error
-
-	ParseCommand@CONSTANTE_AUSENTE:
-		ErrorCommandExpectsNumber <"MUL">, <CONSTANTE>, <SEGUNDO>
-		jmp ParseCommand@error
-	
-	ParseCommand@LINHA_DST_AUSENTE:
-		ErrorCommandExpectsNumber <"ADD">, <LINHA_DST>, <PRIMEIRO>
-		jmp ParseCommand@error
-
-	ParseCommand@LINHA_ORG_AUSENTE:
-		ErrorCommandExpectsNumber <"ADD">, <LINHA_ORG>, <SEGUNDO>
-		jmp ParseCommand@error
-
-	ParseCommand@LINHA_INVALIDA:
-		ErrorNumberOutOfBounds <LINHA>
-
-		jmp ParseCommand@error
-
-	ParseCommand@LINHA_DST_INVALIDA:
-		ErrorNumberOutOfBounds <LINHA_DST>
-
-		jmp ParseCommand@error
-	ParseCommand@LINHA_ORG_INVALIDA:
-		ErrorNumberOutOfBounds <LINHA_ORG>
-		
-		jmp ParseCommand@error
 	ParseCommand@success:
-
 		SkipSpacesInSI si
 		
 		.if (byte ptr [si] != 0)
@@ -871,6 +861,43 @@
 		clc
 		ret
 	ParseCommand endp
+
+
+	ParseCommand@LINHA_AUSENTE proc near
+		ErrorCommandExpectsNumber <"MUL">, <LINHA>, <PRIMEIRO>
+		ret
+	ParseCommand@LINHA_AUSENTE endp
+
+	ParseCommand@CONSTANTE_AUSENTE proc near
+		ErrorCommandExpectsNumber <"MUL">, <CONSTANTE>, <SEGUNDO>
+		ret
+	ParseCommand@CONSTANTE_AUSENTE endp
+	
+	ParseCommand@LINHA_DST_AUSENTE proc near
+		ErrorCommandExpectsNumber <"ADD">, <LINHA_DST>, <PRIMEIRO>
+		ret
+	ParseCommand@LINHA_DST_AUSENTE endp
+
+	ParseCommand@LINHA_ORG_AUSENTE proc near
+		ErrorCommandExpectsNumber <"ADD">, <LINHA_ORG>, <SEGUNDO>
+		ret
+	ParseCommand@LINHA_ORG_AUSENTE endp
+
+	ParseCommand@LINHA_INVALIDA proc near
+		ErrorNumberOutOfBounds <LINHA>
+		ret
+	ParseCommand@LINHA_INVALIDA endp
+
+	ParseCommand@LINHA_DST_INVALIDA proc near
+		ErrorNumberOutOfBounds <LINHA_DST>
+		ret
+	ParseCommand@LINHA_DST_INVALIDA endp
+
+	ParseCommand@LINHA_ORG_INVALIDA proc near
+		ErrorNumberOutOfBounds <LINHA_ORG>
+		ret
+	ParseCommand@LINHA_ORG_INVALIDA endp
+
 
 
 ;====================================================================
@@ -952,7 +979,9 @@
 		lea      dx,         FileName
 		mov      ah,         3dh
 		int      21h
-		jc       ErrorOpen
+		.if (carry?)
+			call ErrorOpen
+		.endif
 		mov      FileHandle, ax
 		mov      FileIsOpen, 1
 		RestoreRegs
@@ -971,7 +1000,9 @@
 		mov ah, 3Fh
 		mov cx, 1
 		int 21h
-		jc  ErrorRead
+		.if (carry?)
+			call ErrorRead
+		.endif
 
 		; EOF
 		.if ax == 0
@@ -991,7 +1022,9 @@
 		mov dx, -1
 		mov al, 1
 		int 21h
-		jc  ErrorRead
+		.if (carry?)
+			call ErrorRead
+		.endif
 		ret
 	MoveBack endp
 
