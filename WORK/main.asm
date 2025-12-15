@@ -325,10 +325,13 @@
 
 		.if (ax == CMD_ADD)
 			call Main@ADD
+			jmp  @MainLoopEnd
 		.elseif  (ax == CMD_MUL)
 			call Main@MUL
+			jmp  @MainLoopEnd
 		.elseif (ax == CMD_UNDO)
 			call Main@UNDO
+			jmp  @MainLoopEnd
 		.elseif (ax == CMD_WRITE)
 			call Main@WRITE
 			jmp  @SkipPrint
