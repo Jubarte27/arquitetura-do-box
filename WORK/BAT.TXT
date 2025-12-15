@@ -1,0 +1,2 @@
+warning A4007: option untranslated, directive required : /P
+ Assembling: main.asm

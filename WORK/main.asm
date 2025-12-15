@@ -21,6 +21,8 @@
 
 	ParseCommand proto near
 	ReadCommand  proto near
+	MULMatrix   proto near, LINHA:byte, CONSTANTE: sword
+	ADDMatrix proto near, LINHA_DST:byte, LINHA_ORG: byte
 
 	PrintMatrix proto near
 
@@ -47,6 +49,21 @@
 	CommandBuffer       db 254
 	CommandBufferLength db 0          ; max length, actual length
 	CommandBufferString db 254 dup(0)
+
+	NonTerminalErrorBuffer db 255 dup(0)
+
+	@Comando      db "Comando",0
+	@espera       db "espera",0
+	@como         db "como",0
+	@parametro    db "parametro",0
+	@@parametro   db "Parametro",0
+	@desconhecido db "desconhecido",0
+
+	@deve_estar_entre_1_e_N db "deve estar entre 1 e N"
+	
+	COLON_SPACE db ": ",0
+
+	ExplanationSeparator textequ <COLON_SPACE>
 
 	MsgCRLF           db CR, LF, 0
 	; Used on PeekChar
@@ -135,12 +152,64 @@
 
 	printf_c macro string:req
 		SaveRegs ax,   dx
+		mov      ah,   02h
 		forc     char, <string>
-			mov ah, 02h
 			mov dl, '&char'
 			int 21h
 		endm
 		RestoreRegs
+	endm
+
+	strcpy_c macro src:req, dst:req
+		ifdifi <dst>, <di>
+			lea di, dst
+		endif
+
+		forc char, <src>
+			mov byte ptr [di], '&char'
+			inc di
+		endm
+		mov byte ptr [di], 0
+	endm
+
+	strcpy macro src:req, dst:req
+		SaveRegs ax
+		ifdifi   <src>, <si>
+			lea si, src
+		endif
+		ifdifi <dst>, <di>
+			lea di, dst
+		endif
+		.repeat
+			mov al,   [si]
+			mov [di], al
+			inc si
+			inc di
+		.until (al == 0)
+		dec    si
+		dec    di
+		RestoreRegs
+	endm
+
+	DEFINED MACRO symbol:REQ
+		IFDEF symbol
+			EXITM <-1> ;; True
+		ELSE
+			EXITM <0> ;; False
+		ENDIF
+	ENDM
+
+	strcpy_all macro dst:req, strings:vararg
+		ifdifi <dst>, <di>
+			lea di, dst
+		endif
+		for string, <strings>
+			if DEFINED(string)
+				strcpy string, di
+			else
+				strcpy_c <string>, di
+			endif
+		endm
 	endm
 
 	print_Pair macro line:req, col:req
@@ -161,6 +230,16 @@
 
 ;--------------------------------------------------------------------
 ; Miscellaneous
+
+	ErrorCommandExpectsNumber macro command:req, paramName:req, positionName:req
+		strcpy_all NonTerminalErrorBuffer, \
+		<@Comando, !< &command !>, @espera, !< &paramName !>, @como, !< &positionName !>, @parametro, ExplanationSeparator, CommandBufferString>
+	endm
+
+	ErrorNumberOutOfBounds macro paramName:req
+		strcpy_all NonTerminalErrorBuffer, \
+		<@@parametro, !< &paramName !>, @deve_estar_entre_1_e_N, ExplanationSeparator, CommandBufferString>
+	endm
 
 	CloseFileHandle macro
 		mov ah, 3eh
@@ -197,11 +276,110 @@
 	.code
 	.startup
 	invoke ReadMatrix
-	invoke PrintMatrix
 	@whiletrue:
+		invoke PrintMatrix
 		invoke ReadCommand
+		@Validate:
+			jnc @ValidCommand
+			invoke printf_s,      addr NonTerminalErrorBuffer
+			lea    bx,            NonTerminalErrorBuffer
+			mov    byte ptr [bx], 0
+			putc CR
+			putc LF
+			invoke ReadCommand
+			jmp @Validate
+		@ValidCommand:
+
+		cmp ax, CMD_ADD
+		je @Main@ADD
+		cmp ax, CMD_MUL
+		je @Main@MUL
+		cmp ax, CMD_UNDO
+		je @Main@UNDO
+		cmp ax, CMD_WRITE
+		je @Main@WRITE
+
+		putc CR
+		putc LF
+		@MainLoopEnd:
 	jmp @whiletrue
 	jmp ExitSuccess
+
+	@Main@ADD:
+		invoke ADDMatrix, bl, cl
+		jmp @MainLoopEnd
+	@Main@MUL:
+		invoke MULMatrix, bl, cx
+		jmp @MainLoopEnd
+	@Main@UNDO:
+		jmp @MainLoopEnd
+	@Main@WRITE:
+		jmp @MainLoopEnd
+
+	MULMatrix proc near uses RegsInvokeUses, LINHA:byte, CONSTANTE: sword
+		mov al, LINHA
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+
+		shl ax, 1
+
+		mov bx, offset Matrix
+		add bx, ax
+
+		mov ch, 0
+		mov cl, NPlusOne
+
+		MULMatrix@Loop:
+			mov ax, sword ptr [bx]
+			imul CONSTANTE
+			mov sword ptr [bx], ax
+
+			add bx, 2
+			loop MULMatrix@Loop
+
+		ret
+	MULMatrix endp
+
+	ADDMatrix proc near uses RegsInvokeUses di si, LINHA_DST:byte, LINHA_ORG: byte
+		local SRC:ptr sword, DST:ptr sword
+
+		mov al, LINHA_DST
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+		shl ax, 1
+		
+		lea di, Matrix
+		add di, ax
+
+
+		mov al, LINHA_ORG
+		dec al
+		mov bl, TotalCol
+		inc bl
+		mul bl
+		shl ax, 1
+
+		lea si, Matrix
+		add si, ax
+
+		mov ch, 0
+		mov cl, NPlusOne
+		ADDMatrix@Loop:
+			mov ax, [di]
+			add ax, [si]
+			mov [di], ax
+
+			add di, 2
+			add si, 2
+			loop ADDMatrix@Loop
+
+		ret
+	ADDMatrix endp
+	
 ;====================================================================
 ; Exiting
 	ExitSuccess:
@@ -221,7 +399,7 @@
 ;====================================================================
 ; Reading input
 
-	ReadCommand proc near uses RegsInvokeUses si
+	ReadCommand proc near uses si
 		mov dx, offset CommandBuffer
 		mov ah, 0Ah
 		int 21h
@@ -232,13 +410,11 @@
 		
 		mov byte ptr [CommandBufferString+bx], 0
 
-		invoke ParseCommand
 
-		jc ErrorInvalidCommand
-
-		printf_c <aceitamos a batata>
+		putc CR
 		putc LF
 
+		invoke ParseCommand
 		ret
 	ReadCommand endp
 
@@ -312,25 +488,32 @@
 			inc si
 		.endw
 
+		mov bx, string
+		add bx, cx
+		.if (si == bx)
+			stc
+			ret
+		.endif
+
 		.if (cx)
 			neg ax
 		.endif
 
 		mov bx,           result
 		mov word ptr[bx], ax
+		clc
 		ret
 	ReadNumFromString endp
 
 	skipAndRead macro string:req, numberInMemory:req, resultReg:req
 		SkipSpacesInSI string
-
-		.if (byte ptr [string] > '9' || byte ptr [string] < '0' )
-			jmp ErrorCommandExpectsNumber
-		.endif
-		
 		invoke ReadNumFromString, string, addr numberInMemory
-		
-		mov resultReg, numberInMemory
+		.if (carry?)
+			stc
+		.else
+			mov resultReg, numberInMemory
+			clc
+		.endif
 	endm
 
 	; string in memory mus be in si
@@ -354,14 +537,23 @@
 		jumpIfSIComparesTo <ADD> ParseCommand@ADD
 		jumpIfSIComparesTo <UNDO> ParseCommand@UNDO
 		jumpIfSIComparesTo <WRITE> ParseCommand@WRITE
-		
+	
+		strcpy_all NonTerminalErrorBuffer, <@Comando, @desconhecido, ExplanationSeparator, CommandBufferString>
 	ParseCommand@error:
 		stc
 		ret
 	ParseCommand@MUL:
 
 		skipAndRead si, a, bx
+		jc  ParseCommand@LINHA_AUSENTE
+		cmp bx, word ptr [N]
+		jg  ParseCommand@LINHA_INVALIDA
+		cmp bx, 1
+		jl  ParseCommand@LINHA_INVALIDA
+		
 		skipAndRead si, a, cx
+		jc ParseCommand@CONSTANTE_AUSENTE
+
 		mov ax, CMD_MUL
 
 		jmp ParseCommand@success
@@ -369,7 +561,20 @@
 	ParseCommand@ADD:
 
 		skipAndRead si, a, bx
+		jc  ParseCommand@LINHA_DST_AUSENTE
+		cmp bx, word ptr [N]
+		jg  ParseCommand@LINHA_DST_INVALIDA
+		cmp bx, 1
+		jl  ParseCommand@LINHA_DST_INVALIDA
+
 		skipAndRead si, a, cx
+		jc  ParseCommand@LINHA_ORG_AUSENTE
+		cmp bx, word ptr [N]
+		jg  ParseCommand@LINHA_ORG_INVALIDA
+		cmp bx, 1
+		jl  ParseCommand@LINHA_ORG_INVALIDA
+
+
 		mov ax, CMD_ADD
 		
 		jmp ParseCommand@success
@@ -381,9 +586,40 @@
 	ParseCommand@WRITE:
 		SkipSpacesInSI si
 		
-		mov dx, si        ; filename pointer
+		mov dx, si               ; filename pointer
 		mov ax, CMD_WRITE
+		jmp ParseCommand@success
 
+	ParseCommand@LINHA_AUSENTE:
+		ErrorCommandExpectsNumber <"MUL">, <LINHA>, <PRIMEIRO>
+		jmp ParseCommand@error
+
+	ParseCommand@CONSTANTE_AUSENTE:
+		ErrorCommandExpectsNumber <"MUL">, <CONSTANTE>, <SEGUNDO>
+		jmp ParseCommand@error
+	
+	ParseCommand@LINHA_DST_AUSENTE:
+		ErrorCommandExpectsNumber <"ADD">, <LINHA_DST>, <PRIMEIRO>
+		jmp ParseCommand@error
+
+	ParseCommand@LINHA_ORG_AUSENTE:
+		ErrorCommandExpectsNumber <"ADD">, <LINHA_ORG>, <SEGUNDO>
+		jmp ParseCommand@error
+
+	ParseCommand@LINHA_INVALIDA:
+		ErrorNumberOutOfBounds <LINHA>
+
+		jmp ParseCommand@error
+
+	ParseCommand@LINHA_DST_INVALIDA:
+		ErrorNumberOutOfBounds <LINHA_DST>
+
+		jmp ParseCommand@error
+	ParseCommand@LINHA_ORG_INVALIDA:
+		ErrorNumberOutOfBounds <LINHA_ORG>
+		
+		jmp ParseCommand@error
+	
 	ParseCommand@success:
 		clc
 		ret
@@ -429,11 +665,6 @@
 
 	ErrorInvalidCommand:
 		printf_c <Unable to parse command: >
-		invoke   printf_s, addr CommandBufferString
-		jmp      ExitFailure
-
-	ErrorCommandExpectsNumber:
-		printf_c <Command expects arguments: >
 		invoke   printf_s, addr CommandBufferString
 		jmp      ExitFailure
 
@@ -553,9 +784,11 @@
 			invoke ReadChar
 			.if    ax == 0  ; EOF
 				mov al,       TotalCol
+				inc al ; TotalCol starts at 0
 				mov NPlusOne, al
 				dec al                 ; ax = N
-				mov N,        al
+				mov N,        al ; TotalCol starts at 0
+				dec al
 				.if (TotalRow != al)
 					jmp ErrorRowCount
 				.elseif (al < 2 ) || (al > 7)
@@ -566,7 +799,7 @@
 
 			mov bl, FileBuffer
 
-			.if bl == COL_SEPARATOR
+			.if bl == 3Bh
 				inc Col
 			.elseif bl == LF
 				inc FileLine
@@ -619,14 +852,14 @@
 		mov      bx, offset Matrix
 		mov      dx, 8
 		mov      cx, 0             ; High has row, Low has column
-		.ForRow:                   ; for (row = 0; row <= N; row++)
-			cmp ch, N      ; row <= N
-			jg  .EndForRow
+		.ForRow:                   ; for (row = 0; row < N; row++)
+			cmp ch, N      ; row < N
+			jge  .EndForRow
 
 			mov      cl, 0 ; col = 0
-			.ForCol:       ; for (col = 0; col <= NPlusOne; col++)
-				cmp cl, NPlusOne ; col <= NPlusOne
-				jg  .EndForCol
+			.ForCol:       ; for (col = 0; col < NPlusOne; col++)
+				cmp cl, NPlusOne ; col < NPlusOne
+				jge  .EndForCol
 
 				mov ax, sword ptr [bx]
 				invoke printf_d_padded, ax, dx
@@ -636,6 +869,7 @@
 				inc cl      ; col ++
 				jmp .ForCol
 			.EndForCol:
+			putc CR
 			putc LF
 
 			inc ch      ; row++
